@@ -11,11 +11,11 @@ docker-build:
    script:
       - export DOCKER_CLI_EXPERIMENTAL=enabled
       - docker buildx create --use
-      - docker buildx build --platform linux/arm/v6 -t carlonluca/gitea:$VERSION .
-      - docker buildx build --platform linux/arm/v7 -t carlonluca/gitea:$VERSION .
+      #- docker buildx build --platform linux/arm/v6 -t carlonluca/gitea:$VERSION .
+      #- docker buildx build --platform linux/arm/v7 -t carlonluca/gitea:$VERSION .
       #- docker buildx build --platform linux/386 -t carlonluca/gitea:$VERSION .
-      - docker buildx build --platform linux/arm64/v8 -t carlonluca/gitea:$VERSION .
+      #- docker buildx build --platform linux/arm64/v8 -t carlonluca/gitea:$VERSION .
       #- docker buildx build --platform linux/amd64 -t carlonluca/gitea:$VERSION .
-      - docker buildx build --push --platform linux/arm/v6,linux/arm64/v8 -t carlonluca/gitea:$VERSION .
+      - docker buildx build --push --platform linux/arm/v6,linux/arm/v7,linux/arm64/v8 -t carlonluca/gitea:$VERSION .
    rules:
       - when: manual
