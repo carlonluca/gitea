@@ -15,11 +15,13 @@ import (
 
 	"code.gitea.io/gitea/modules/setting"
 
-	// Needed for the MySQL driver
-	_ "github.com/go-sql-driver/mysql"
+	"xorm.io/builder"
 	"xorm.io/xorm"
 	"xorm.io/xorm/names"
 	"xorm.io/xorm/schemas"
+
+	// Needed for the MySQL driver
+	_ "github.com/go-sql-driver/mysql"
 
 	// Needed for the Postgresql driver
 	_ "github.com/lib/pq"
@@ -145,7 +147,16 @@ func getEngine() (*xorm.Engine, error) {
 		return nil, err
 	}
 
-	engine, err := xorm.NewEngine(setting.Database.Type, connStr)
+	var engine *xorm.Engine
+
+	if setting.Database.UsePostgreSQL && len(setting.Database.Schema) > 0 {
+		// OK whilst we sort out our schema issues - create a schema aware postgres
+		registerPostgresSchemaDriver()
+		engine, err = xorm.NewEngine("postgresschema", connStr)
+	} else {
+		engine, err = xorm.NewEngine(setting.Database.Type, connStr)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -155,16 +166,6 @@ func getEngine() (*xorm.Engine, error) {
 		engine.Dialect().SetParams(map[string]string{"DEFAULT_VARCHAR": "nvarchar"})
 	}
 	engine.SetSchema(setting.Database.Schema)
-	if setting.Database.UsePostgreSQL && len(setting.Database.Schema) > 0 {
-		// Add the schema to the search path
-		if _, err := engine.Exec(`SELECT set_config(
-			'search_path',
-			? || ',' || current_setting('search_path'),
-			false)`,
-			setting.Database.Schema); err != nil {
-			return nil, err
-		}
-	}
 	return engine, nil
 }
 
@@ -311,6 +312,13 @@ func DumpDatabase(filePath string, dbType string) error {
 			return err
 		}
 		tbs = append(tbs, t)
+	}
+
+	// temporary fix for v1.13.x (https://github.com/go-gitea/gitea/issues/14069)
+	if _, err := x.Where(builder.IsNull{"keep_activity_private"}).
+		Cols("keep_activity_private").
+		Update(User{KeepActivityPrivate: false}); err != nil {
+		return err
 	}
 
 	type Version struct {

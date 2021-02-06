@@ -10,12 +10,15 @@ docker-build:
       - docker login -u "$CI_DOCKER_HUB_USER" -p "$CI_DOCKER_HUB_PASSWORD" docker.io
    script:
       - export DOCKER_CLI_EXPERIMENTAL=enabled
-      - docker buildx create --use
-      - docker buildx build --platform linux/arm/v6 -t carlonluca/gitea:$VERSION .
-      - docker buildx build --platform linux/arm/v7 -t carlonluca/gitea:$VERSION .
-      #- docker buildx build --platform linux/386 -t carlonluca/gitea:$VERSION .
-      - docker buildx build --platform linux/arm64/v8 -t carlonluca/gitea:$VERSION .
-      #- docker buildx build --platform linux/amd64 -t carlonluca/gitea:$VERSION .
-      - docker buildx build --push --platform linux/arm/v6,linux/arm64/v8 -t carlonluca/gitea:$VERSION .
+      - docker buildx create --use --name gitea_builder
+      - docker buildx build --push --platform linux/arm/v6 -t carlonluca/gitea:$VERSION-armv6 .
+      - docker buildx build --push --platform linux/arm/v7 -t carlonluca/gitea:$VERSION-armv7 .
+      - docker buildx build --push --platform linux/arm64/v8 -t carlonluca/gitea:$VERSION-armv8 .
+      - docker buildx build --push --platform linux/amd64 -t carlonluca/gitea:$VERSION-amd64 .
+      - docker buildx imagetools create -t carlonluca/gitea:$VERSION carlonluca/gitea:$VERSION-armv6 carlonluca/gitea:$VERSION-armv7 carlonluca/gitea:$VERSION-armv8 carlonluca/gitea:$VERSION-amd64
+      - docker push carlonluca/gitea:$VERSION
+      - docker image rm carlonluca/gitea:$VERSION carlonluca/gitea:$VERSION-armv6 carlonluca/gitea:$VERSION-armv7 carlonluca/gitea:$VERSION-armv8 carlonluca/gitea:$VERSION-amd64
+      - docker buildx stop gitea_builder
+      - docker buildx rm gitea_builder
    rules:
       - when: manual
