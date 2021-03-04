@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"container/list"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"strconv"
 	"strings"
 
@@ -129,19 +131,23 @@ func (repo *Repository) getCommit(id SHA1) (*Commit, error) {
 
 // ConvertToSHA1 returns a Hash object from a potential ID string
 func (repo *Repository) ConvertToSHA1(commitID string) (SHA1, error) {
-	if len(commitID) != 40 {
-		var err error
-		actualCommitID, err := NewCommand("rev-parse", "--verify", commitID).RunInDir(repo.Path)
-		if err != nil {
-			if strings.Contains(err.Error(), "unknown revision or path") ||
-				strings.Contains(err.Error(), "fatal: Needed a single revision") {
-				return SHA1{}, ErrNotExist{commitID, ""}
-			}
-			return SHA1{}, err
+	if len(commitID) == 40 {
+		sha1, err := NewIDFromString(commitID)
+		if err == nil {
+			return sha1, nil
 		}
-		commitID = actualCommitID
 	}
-	return NewIDFromString(commitID)
+
+	actualCommitID, err := NewCommand("rev-parse", "--verify", commitID).RunInDir(repo.Path)
+	if err != nil {
+		if strings.Contains(err.Error(), "unknown revision or path") ||
+			strings.Contains(err.Error(), "fatal: Needed a single revision") {
+			return SHA1{}, ErrNotExist{commitID, ""}
+		}
+		return SHA1{}, err
+	}
+
+	return NewIDFromString(actualCommitID)
 }
 
 // GetCommit returns commit object of by ID string.
@@ -323,8 +329,41 @@ func (repo *Repository) FileCommitsCount(revision, file string) (int64, error) {
 
 // CommitsByFileAndRange return the commits according revison file and the page
 func (repo *Repository) CommitsByFileAndRange(revision, file string, page int) (*list.List, error) {
-	stdout, err := NewCommand("log", revision, "--follow", "--skip="+strconv.Itoa((page-1)*50),
-		"--max-count="+strconv.Itoa(CommitsRangeSize), prettyLogFormat, "--", file).RunInDirBytes(repo.Path)
+	skip := (page - 1) * CommitsRangeSize
+
+	stdoutReader, stdoutWriter := io.Pipe()
+	defer func() {
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
+	}()
+	go func() {
+		stderr := strings.Builder{}
+		err := NewCommand("log", revision, "--follow",
+			"--max-count="+strconv.Itoa(CommitsRangeSize*page),
+			prettyLogFormat, "--", file).
+			RunInDirPipeline(repo.Path, stdoutWriter, &stderr)
+		if err != nil {
+			if stderr.Len() > 0 {
+				err = fmt.Errorf("%v - %s", err, stderr.String())
+			}
+			_ = stdoutWriter.CloseWithError(err)
+		} else {
+			_ = stdoutWriter.Close()
+		}
+	}()
+
+	if skip > 0 {
+		_, err := io.CopyN(ioutil.Discard, stdoutReader, int64(skip*41))
+		if err != nil {
+			if err == io.EOF {
+				return list.New(), nil
+			}
+			_ = stdoutReader.CloseWithError(err)
+			return nil, err
+		}
+	}
+
+	stdout, err := ioutil.ReadAll(stdoutReader)
 	if err != nil {
 		return nil, err
 	}
