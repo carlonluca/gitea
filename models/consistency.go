@@ -5,10 +5,13 @@
 package models
 
 import (
+	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
+	"code.gitea.io/gitea/modules/setting"
 	"github.com/stretchr/testify/assert"
 	"xorm.io/builder"
 )
@@ -221,6 +224,24 @@ func DeleteOrphanedLabels() error {
 	return nil
 }
 
+// CountOrphanedIssueLabels return count of IssueLabels witch have no label behind anymore
+func CountOrphanedIssueLabels() (int64, error) {
+	return x.Table("issue_label").
+		Join("LEFT", "label", "issue_label.label_id = label.id").
+		Where(builder.IsNull{"label.id"}).Count()
+}
+
+// DeleteOrphanedIssueLabels delete IssueLabels witch have no label behind anymore
+func DeleteOrphanedIssueLabels() error {
+
+	_, err := x.In("id", builder.Select("issue_label.id").From("issue_label").
+		Join("LEFT", "label", "issue_label.label_id = label.id").
+		Where(builder.IsNull{"label.id"})).
+		Delete(IssueLabel{})
+
+	return err
+}
+
 // CountOrphanedIssues count issues without a repo
 func CountOrphanedIssues() (int64, error) {
 	return x.Table("issue").
@@ -294,4 +315,62 @@ func FixNullArchivedRepository() (int64, error) {
 	return x.Where(builder.IsNull{"is_archived"}).Cols("is_archived").Update(&Repository{
 		IsArchived: false,
 	})
+}
+
+// CountBadSequences looks for broken sequences from recreate-table mistakes
+func CountBadSequences() (int64, error) {
+	if !setting.Database.UsePostgreSQL {
+		return 0, nil
+	}
+
+	sess := x.NewSession()
+	defer sess.Close()
+
+	var sequences []string
+	schema := sess.Engine().Dialect().URI().Schema
+
+	sess.Engine().SetSchema("")
+	if err := sess.Table("information_schema.sequences").Cols("sequence_name").Where("sequence_name LIKE 'tmp_recreate__%_id_seq%' AND sequence_catalog = ?", setting.Database.Name).Find(&sequences); err != nil {
+		return 0, err
+	}
+	sess.Engine().SetSchema(schema)
+
+	return int64(len(sequences)), nil
+}
+
+// FixBadSequences fixes for broken sequences from recreate-table mistakes
+func FixBadSequences() error {
+	if !setting.Database.UsePostgreSQL {
+		return nil
+	}
+
+	sess := x.NewSession()
+	defer sess.Close()
+	if err := sess.Begin(); err != nil {
+		return err
+	}
+
+	var sequences []string
+	schema := sess.Engine().Dialect().URI().Schema
+
+	sess.Engine().SetSchema("")
+	if err := sess.Table("information_schema.sequences").Cols("sequence_name").Where("sequence_name LIKE 'tmp_recreate__%_id_seq%' AND sequence_catalog = ?", setting.Database.Name).Find(&sequences); err != nil {
+		return err
+	}
+	sess.Engine().SetSchema(schema)
+
+	sequenceRegexp := regexp.MustCompile(`tmp_recreate__(\w+)_id_seq.*`)
+
+	for _, sequence := range sequences {
+		tableName := sequenceRegexp.FindStringSubmatch(sequence)[1]
+		newSequenceName := tableName + "_id_seq"
+		if _, err := sess.Exec(fmt.Sprintf("ALTER SEQUENCE `%s` RENAME TO `%s`", sequence, newSequenceName)); err != nil {
+			return err
+		}
+		if _, err := sess.Exec(fmt.Sprintf("SELECT setval('%s', COALESCE((SELECT MAX(id)+1 FROM `%s`), 1), false)", newSequenceName, tableName)); err != nil {
+			return err
+		}
+	}
+
+	return sess.Commit()
 }
