@@ -17,6 +17,8 @@ menu:
 
 这是针对Gitea配置文件的说明，你可以了解Gitea的强大配置。需要说明的是，你的所有改变请修改 `custom/conf/app.ini` 文件而不是源文件。所有默认值可以通过 [app.example.ini](https://github.com/go-gitea/gitea/blob/master/custom/conf/app.example.ini) 查看到。如果你发现 `%(X)s` 这样的内容，请查看 [ini](https://github.com/go-ini/ini/#recursive-values) 这里的说明。标注了 :exclamation: 的配置项表明除非你真的理解这个配置项的意义，否则最好使用默认值。
 
+{{< toc >}}
+
 ## Overall (`DEFAULT`)
 
 - `APP_NAME`: 应用名称，改成你希望的名字。
@@ -68,7 +70,7 @@ menu:
 - `KEY_FILE`: 启用HTTPS的密钥文件。
 - `STATIC_ROOT_PATH`: 存放模板和静态文件的根目录，默认是 Gitea 的根目录。
 - `STATIC_CACHE_TIME`: **6h**: 静态资源文件，包括 `custom/`, `public/` 和所有上传的头像的浏览器缓存时间。
-- `ENABLE_GZIP`: 启用应用级别的 GZIP 压缩。
+- `ENABLE_GZIP`: 启用实时生成的数据启用 GZIP 压缩，不包括静态资源。
 - `LANDING_PAGE`: 未登录用户的默认页面，可选 `home` 或 `explore`。
 
 - `LFS_START_SERVER`: 是否启用 git-lfs 支持. 可以为 `true` 或 `false`， 默认是 `false`。
@@ -123,6 +125,7 @@ menu:
 - `ACTIVE_CODE_LIVE_MINUTES`: 登录验证码失效时间，单位分钟。
 - `RESET_PASSWD_CODE_LIVE_MINUTES`: 重置密码失效时间，单位分钟。
 - `REGISTER_EMAIL_CONFIRM`: 启用注册邮件激活，前提是 `Mailer` 已经启用。
+- `REGISTER_MANUAL_CONFIRM`: **false**: 新注册用户必须由管理员手动激活,启用此选项需取消`REGISTER_EMAIL_CONFIRM`.
 - `DISABLE_REGISTRATION`: 禁用注册，启用后只能用管理员添加用户。
 - `SHOW_REGISTRATION_BUTTON`: 是否显示注册按钮。
 - `REQUIRE_SIGNIN_VIEW`: 是否所有页面都必须登录后才可访问。
@@ -131,6 +134,11 @@ menu:
 - `ENABLE_REVERSE_PROXY_AUTHENTICATION`: 允许反向代理认证，更多细节见：https://github.com/gogits/gogs/issues/165
 - `ENABLE_REVERSE_PROXY_AUTO_REGISTRATION`: 允许通过反向认证做自动注册。
 - `ENABLE_CAPTCHA`: 注册时使用图片验证码。
+
+### Service - Expore (`service.explore`)
+
+- `REQUIRE_SIGNIN_VIEW`: **false**: 仅允许已登录的用户查看探索页面。
+- `DISABLE_USERS_PAGE`: **false**: 不显示用户探索页面。
 
 ## Webhook (`webhook`)
 

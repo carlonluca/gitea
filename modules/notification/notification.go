@@ -108,6 +108,13 @@ func NotifyPullRequestPushCommits(doer *models.User, pr *models.PullRequest, com
 	}
 }
 
+// NotifyPullRevieweDismiss notifies when a review was dismissed by repo admin
+func NotifyPullRevieweDismiss(doer *models.User, review *models.Review, comment *models.Comment) {
+	for _, notifier := range notifiers {
+		notifier.NotifyPullRevieweDismiss(doer, review, comment)
+	}
+}
+
 // NotifyUpdateComment notifies update comment to notifiers
 func NotifyUpdateComment(doer *models.User, c *models.Comment, oldContent string) {
 	for _, notifier := range notifiers {
@@ -243,9 +250,9 @@ func NotifyRenameRepository(doer *models.User, repo *models.Repository, oldName 
 }
 
 // NotifyPushCommits notifies commits pushed to notifiers
-func NotifyPushCommits(pusher *models.User, repo *models.Repository, refName, oldCommitID, newCommitID string, commits *repository.PushCommits) {
+func NotifyPushCommits(pusher *models.User, repo *models.Repository, opts *repository.PushUpdateOptions, commits *repository.PushCommits) {
 	for _, notifier := range notifiers {
-		notifier.NotifyPushCommits(pusher, repo, refName, oldCommitID, newCommitID, commits)
+		notifier.NotifyPushCommits(pusher, repo, opts, commits)
 	}
 }
 
@@ -264,9 +271,9 @@ func NotifyDeleteRef(pusher *models.User, repo *models.Repository, refType, refF
 }
 
 // NotifySyncPushCommits notifies commits pushed to notifiers
-func NotifySyncPushCommits(pusher *models.User, repo *models.Repository, refName, oldCommitID, newCommitID string, commits *repository.PushCommits) {
+func NotifySyncPushCommits(pusher *models.User, repo *models.Repository, opts *repository.PushUpdateOptions, commits *repository.PushCommits) {
 	for _, notifier := range notifiers {
-		notifier.NotifySyncPushCommits(pusher, repo, refName, oldCommitID, newCommitID, commits)
+		notifier.NotifySyncPushCommits(pusher, repo, opts, commits)
 	}
 }
 
@@ -281,5 +288,12 @@ func NotifySyncCreateRef(pusher *models.User, repo *models.Repository, refType, 
 func NotifySyncDeleteRef(pusher *models.User, repo *models.Repository, refType, refFullName string) {
 	for _, notifier := range notifiers {
 		notifier.NotifySyncDeleteRef(pusher, repo, refType, refFullName)
+	}
+}
+
+// NotifyRepoPendingTransfer notifies creation of pending transfer to notifiers
+func NotifyRepoPendingTransfer(doer, newOwner *models.User, repo *models.Repository) {
+	for _, notifier := range notifiers {
+		notifier.NotifyRepoPendingTransfer(doer, newOwner, repo)
 	}
 }

@@ -11,17 +11,16 @@ import (
 	"strings"
 
 	"code.gitea.io/gitea/models"
+	"code.gitea.io/gitea/modules/context"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/private"
 	"code.gitea.io/gitea/modules/setting"
 	repo_service "code.gitea.io/gitea/services/repository"
 	wiki_service "code.gitea.io/gitea/services/wiki"
-
-	"gitea.com/macaron/macaron"
 )
 
 // ServNoCommand returns information about the provided keyid
-func ServNoCommand(ctx *macaron.Context) {
+func ServNoCommand(ctx *context.PrivateContext) {
 	keyID := ctx.ParamsInt64(":keyid")
 	if keyID <= 0 {
 		ctx.JSON(http.StatusBadRequest, map[string]interface{}{
@@ -73,7 +72,7 @@ func ServNoCommand(ctx *macaron.Context) {
 }
 
 // ServCommand returns information about the provided keyid
-func ServCommand(ctx *macaron.Context) {
+func ServCommand(ctx *context.PrivateContext) {
 	keyID := ctx.ParamsInt64(":keyid")
 	ownerName := ctx.Params(":owner")
 	repoName := ctx.Params(":repo")
@@ -132,6 +131,7 @@ func ServCommand(ctx *macaron.Context) {
 			for _, verb := range ctx.QueryStrings("verb") {
 				if "git-upload-pack" == verb {
 					// User is fetching/cloning a non-existent repository
+					log.Error("Failed authentication attempt (cannot find repository: %s/%s) from %s", results.OwnerName, results.RepoName, ctx.RemoteAddr())
 					ctx.JSON(http.StatusNotFound, map[string]interface{}{
 						"results": results,
 						"type":    "ErrRepoNotExist",
@@ -317,6 +317,7 @@ func ServCommand(ctx *macaron.Context) {
 			userMode := perm.UnitAccessMode(unitType)
 
 			if userMode < mode {
+				log.Error("Failed authentication attempt for %s with key %s (not authorized to %s %s/%s) from %s", user.Name, key.Name, modeString, ownerName, repoName, ctx.RemoteAddr())
 				ctx.JSON(http.StatusUnauthorized, map[string]interface{}{
 					"results": results,
 					"type":    "ErrUnauthorized",

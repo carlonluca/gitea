@@ -12,6 +12,7 @@ import (
 	"code.gitea.io/gitea/models"
 	api "code.gitea.io/gitea/modules/structs"
 
+	jsoniter "github.com/json-iterator/go"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -162,4 +163,48 @@ func TestAPICreateUserInvalidEmail(t *testing.T) {
 		"username":             "invalidUser",
 	})
 	session.MakeRequest(t, req, http.StatusUnprocessableEntity)
+}
+
+func TestAPIEditUser(t *testing.T) {
+	defer prepareTestEnv(t)()
+	adminUsername := "user1"
+	session := loginUser(t, adminUsername)
+	token := getTokenForLoggedInUser(t, session)
+	urlStr := fmt.Sprintf("/api/v1/admin/users/%s?token=%s", "user2", token)
+
+	req := NewRequestWithValues(t, "PATCH", urlStr, map[string]string{
+		// required
+		"login_name": "user2",
+		"source_id":  "0",
+		// to change
+		"full_name": "Full Name User 2",
+	})
+	session.MakeRequest(t, req, http.StatusOK)
+
+	empty := ""
+	req = NewRequestWithJSON(t, "PATCH", urlStr, api.EditUserOption{
+		LoginName: "user2",
+		SourceID:  0,
+		Email:     &empty,
+	})
+	resp := session.MakeRequest(t, req, http.StatusUnprocessableEntity)
+
+	errMap := make(map[string]interface{})
+	json := jsoniter.ConfigCompatibleWithStandardLibrary
+	json.Unmarshal(resp.Body.Bytes(), &errMap)
+	assert.EqualValues(t, "email is not allowed to be empty string", errMap["message"].(string))
+
+	user2 := models.AssertExistsAndLoadBean(t, &models.User{LoginName: "user2"}).(*models.User)
+	assert.Equal(t, false, user2.IsRestricted)
+	bTrue := true
+	req = NewRequestWithJSON(t, "PATCH", urlStr, api.EditUserOption{
+		// required
+		LoginName: "user2",
+		SourceID:  0,
+		// to change
+		Restricted: &bTrue,
+	})
+	session.MakeRequest(t, req, http.StatusOK)
+	user2 = models.AssertExistsAndLoadBean(t, &models.User{LoginName: "user2"}).(*models.User)
+	assert.Equal(t, true, user2.IsRestricted)
 }

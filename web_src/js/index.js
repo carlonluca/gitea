@@ -1,5 +1,4 @@
-/* exported timeAddManual, toggleStopwatch, cancelStopwatch */
-/* exported toggleDeadlineForm, setDeadline, updateDeadline, deleteDependencyModal, cancelCodeComment, onOAuthLoginClick */
+/* exported deleteDependencyModal, cancelCodeComment, onOAuthLoginClick */
 
 import './publicpath.js';
 
@@ -12,7 +11,7 @@ import initMigration from './features/migration.js';
 import initContextPopups from './features/contextpopup.js';
 import initGitGraph from './features/gitgraph.js';
 import initClipboard from './features/clipboard.js';
-import initUserHeatmap from './features/userheatmap.js';
+import initHeatmap from './features/heatmap.js';
 import initProject from './features/projects.js';
 import initServiceWorker from './features/serviceworker.js';
 import initMarkdownAnchors from './markdown/anchors.js';
@@ -21,11 +20,13 @@ import attachTribute from './features/tribute.js';
 import createColorPicker from './features/colorpicker.js';
 import createDropzone from './features/dropzone.js';
 import initTableSort from './features/tablesort.js';
+import initImageDiff from './features/imagediff.js';
 import ActivityTopAuthors from './components/ActivityTopAuthors.vue';
 import {initNotificationsTable, initNotificationCount} from './features/notification.js';
-import {createCodeEditor} from './features/codeeditor.js';
+import {initStopwatch} from './features/stopwatch.js';
+import {createCodeEditor, createMonaco} from './features/codeeditor.js';
 import {svg, svgs} from './svg.js';
-import {isMobile} from './utils.js';
+import {stripTags, mqBinarySearch} from './utils.js';
 
 const {AppSubUrl, StaticUrlPrefix, csrf} = window.config;
 
@@ -210,24 +211,22 @@ function initRepoStatusChecker() {
         _csrf: csrf,
       },
       complete(xhr) {
-        if (xhr.status === 200) {
-          if (xhr.responseJSON) {
-            if (xhr.responseJSON.status === 4) {
-              window.location.reload();
-              return;
-            } else if (xhr.responseJSON.status === 3) {
-              $('#repo_migrating_progress').hide();
-              $('#repo_migrating').hide();
-              $('#repo_migrating_failed').show();
-              $('#repo_migrating_failed_image').show();
-              $('#repo_migrating_failed_error').text(xhr.responseJSON.err);
-              return;
-            }
-            setTimeout(() => {
-              initRepoStatusChecker();
-            }, 2000);
+        if (xhr.status === 200 && xhr.responseJSON) {
+          if (xhr.responseJSON.status === 4) {
+            window.location.reload();
+            return;
+          } else if (xhr.responseJSON.status === 3) {
+            $('#repo_migrating_progress').hide();
+            $('#repo_migrating').hide();
+            $('#repo_migrating_failed').show();
+            $('#repo_migrating_failed_image').show();
+            $('#repo_migrating_failed_error').text(xhr.responseJSON.err);
             return;
           }
+          setTimeout(() => {
+            initRepoStatusChecker();
+          }, 2000);
+          return;
         }
         $('#repo_migrating_progress').hide();
         $('#repo_migrating').hide();
@@ -310,42 +309,32 @@ function replaceAndKeepCursor(field, oldval, newval) {
   }
 }
 
-function retrieveImageFromClipboardAsBlob(pasteEvent, callback) {
-  if (!pasteEvent.clipboardData) {
-    return;
+function getPastedImages(e) {
+  if (!e.clipboardData) return [];
+
+  const files = [];
+  for (const item of e.clipboardData.items || []) {
+    if (!item.type || !item.type.startsWith('image/')) continue;
+    files.push(item.getAsFile());
   }
 
-  const {items} = pasteEvent.clipboardData;
-  if (typeof items === 'undefined') {
-    return;
+  if (files.length) {
+    e.preventDefault();
+    e.stopPropagation();
   }
-
-  for (let i = 0; i < items.length; i++) {
-    if (!items[i].type.includes('image')) continue;
-    const blob = items[i].getAsFile();
-
-    if (typeof (callback) === 'function') {
-      pasteEvent.preventDefault();
-      pasteEvent.stopPropagation();
-      callback(blob);
-    }
-  }
+  return files;
 }
 
-function uploadFile(file, callback) {
-  const xhr = new XMLHttpRequest();
-
-  xhr.addEventListener('load', () => {
-    if (xhr.status === 200) {
-      callback(xhr.responseText);
-    }
-  });
-
-  xhr.open('post', $('#dropzone').data('upload-url'), true);
-  xhr.setRequestHeader('X-Csrf-Token', csrf);
+async function uploadFile(file) {
   const formData = new FormData();
   formData.append('file', file, file.name);
-  xhr.send(formData);
+
+  const res = await fetch($('#dropzone').data('upload-url'), {
+    method: 'POST',
+    headers: {'X-Csrf-Token': csrf},
+    body: formData,
+  });
+  return await res.json();
 }
 
 function reload() {
@@ -355,33 +344,29 @@ function reload() {
 function initImagePaste(target) {
   target.each(function () {
     const field = this;
-    field.addEventListener('paste', (event) => {
-      retrieveImageFromClipboardAsBlob(event, (img) => {
+    field.addEventListener('paste', async (e) => {
+      for (const img of getPastedImages(e)) {
         const name = img.name.substr(0, img.name.lastIndexOf('.'));
         insertAtCursor(field, `![${name}]()`);
-        uploadFile(img, (res) => {
-          const data = JSON.parse(res);
-          replaceAndKeepCursor(field, `![${name}]()`, `![${name}](${AppSubUrl}/attachments/${data.uuid})`);
-          const input = $(`<input id="${data.uuid}" name="files" type="hidden">`).val(data.uuid);
-          $('.files').append(input);
-        });
-      });
+        const data = await uploadFile(img);
+        replaceAndKeepCursor(field, `![${name}]()`, `![${name}](${AppSubUrl}/attachments/${data.uuid})`);
+        const input = $(`<input id="${data.uuid}" name="files" type="hidden">`).val(data.uuid);
+        $('.files').append(input);
+      }
     }, false);
   });
 }
 
 function initSimpleMDEImagePaste(simplemde, files) {
-  simplemde.codemirror.on('paste', (_, event) => {
-    retrieveImageFromClipboardAsBlob(event, (img) => {
+  simplemde.codemirror.on('paste', async (_, e) => {
+    for (const img of getPastedImages(e)) {
       const name = img.name.substr(0, img.name.lastIndexOf('.'));
-      uploadFile(img, (res) => {
-        const data = JSON.parse(res);
-        const pos = simplemde.codemirror.getCursor();
-        simplemde.codemirror.replaceRange(`![${name}](${AppSubUrl}/attachments/${data.uuid})`, pos);
-        const input = $(`<input id="${data.uuid}" name="files" type="hidden">`).val(data.uuid);
-        files.append(input);
-      });
-    });
+      const data = await uploadFile(img);
+      const pos = simplemde.codemirror.getCursor();
+      simplemde.codemirror.replaceRange(`![${name}](${AppSubUrl}/attachments/${data.uuid})`, pos);
+      const input = $(`<input id="${data.uuid}" name="files" type="hidden">`).val(data.uuid);
+      files.append(input);
+    }
   });
 }
 
@@ -542,20 +527,23 @@ function initCommentForm() {
           $(this).data('id'),
         ).then(reload);
       }
-      switch (input_id) {
-        case '#milestone_id':
-          $list.find('.selected').html(`<a class="item" href=${$(this).data('href')}>${
-            htmlEscape($(this).text())}</a>`);
-          break;
-        case '#project_id':
-          $list.find('.selected').html(`<a class="item" href=${$(this).data('href')}>${
-            htmlEscape($(this).text())}</a>`);
-          break;
-        case '#assignee_id':
-          $list.find('.selected').html(`<a class="item" href=${$(this).data('href')}>` +
-                        `<img class="ui avatar image" src=${$(this).data('avatar')}>${
-                          htmlEscape($(this).text())}</a>`);
+
+      let icon = '';
+      if (input_id === '#milestone_id') {
+        icon = svg('octicon-milestone', 18, 'mr-3');
+      } else if (input_id === '#project_id') {
+        icon = svg('octicon-project', 18, 'mr-3');
+      } else if (input_id === '#assignee_id') {
+        icon = `<img class="ui avatar image mr-3" src=${$(this).data('avatar')}>`;
       }
+
+      $list.find('.selected').html(`
+        <a class="item muted sidebar-item-link" href=${$(this).data('href')}>
+          ${icon}
+          ${htmlEscape($(this).text())}
+        </a>
+      `);
+
       $(`.ui${select_id}.list .no-select`).addClass('hide');
       $(input_id).val($(this).data('id'));
     });
@@ -696,6 +684,13 @@ function initIssueComments() {
     return false;
   });
 
+  $('.dismiss-review-btn').on('click', function (e) {
+    e.preventDefault();
+    const $this = $(this);
+    const $dismissReviewModal = $this.next();
+    $dismissReviewModal.modal('show');
+  });
+
   $(document).on('click', (event) => {
     const urlTarget = $(':target');
     if (urlTarget.length === 0) return;
@@ -712,6 +707,54 @@ function initIssueComments() {
       $(window).scrollTop(scrollPosition);
       window.history.pushState(null, null, ' ');
     }
+  });
+}
+
+function getArchive($target, url, first) {
+  $.ajax({
+    url,
+    type: 'POST',
+    data: {
+      _csrf: csrf,
+    },
+    complete(xhr) {
+      if (xhr.status === 200) {
+        if (!xhr.responseJSON) {
+          // XXX Shouldn't happen?
+          $target.closest('.dropdown').children('i').removeClass('loading');
+          return;
+        }
+
+        if (!xhr.responseJSON.complete) {
+          $target.closest('.dropdown').children('i').addClass('loading');
+          // Wait for only three quarters of a second initially, in case it's
+          // quickly archived.
+          setTimeout(() => {
+            getArchive($target, url, false);
+          }, first ? 750 : 2000);
+        } else {
+          // We don't need to continue checking.
+          $target.closest('.dropdown').children('i').removeClass('loading');
+          window.location.href = url;
+        }
+      }
+    }
+  });
+}
+
+function initArchiveLinks() {
+  if ($('.archive-link').length === 0) {
+    return;
+  }
+
+  $('.archive-link').on('click', function (event) {
+    const url = $(this).data('url');
+    if (typeof url === 'undefined') {
+      return;
+    }
+
+    event.preventDefault();
+    getArchive($(event.target), url, true);
   });
 }
 
@@ -733,6 +776,15 @@ async function initRepository() {
       message: {noResults: $dropdown.data('no-results')}
     });
   }
+
+  // Commit statuses
+  $('.commit-statuses-trigger').each(function () {
+    $(this)
+      .popup({
+        on: 'click',
+        position: ($('.repository.file.list').length > 0 ? 'right center' : 'left center'),
+      });
+  });
 
   // File list and commits
   if ($('.repository.file.list').length > 0 || ('.repository.commits').length > 0) {
@@ -803,6 +855,7 @@ async function initRepository() {
       $('#pull-desc').toggle();
       $('#pull-desc-edit').toggle();
       $('.in-edit').toggle();
+      $('#issue-title-wrapper').toggleClass('edit-active');
       $editInput.focus();
       return false;
     };
@@ -869,7 +922,7 @@ async function initRepository() {
     });
 
     // Quote reply
-    $('.quote-reply').on('click', function (event) {
+    $(document).on('click', '.quote-reply', function (event) {
       $(this).closest('.dropdown').find('.menu').toggle('visible');
       const target = $(this).data('target');
       const quote = $(`#comment-${target}`).text().replace(/\n/g, '\n> ');
@@ -894,8 +947,29 @@ async function initRepository() {
       event.preventDefault();
     });
 
+    // Reference issue
+    $(document).on('click', '.reference-issue', function (event) {
+      const $this = $(this);
+
+      $this.closest('.dropdown').find('.menu').toggle('visible');
+
+      const content = $(`#comment-${$this.data('target')}`).text();
+      const subject = content.split('\n', 1)[0].slice(0, 255);
+
+      const poster = $this.data('poster');
+      const reference = $this.data('reference');
+
+      const $modal = $($this.data('modal'));
+      $modal.find('input[name="title"').val(subject);
+      $modal.find('textarea[name="content"]').val(`${content}\n\n_Originally posted by @${poster} in ${reference}_`);
+
+      $modal.modal('show');
+
+      event.preventDefault();
+    });
+
     // Edit issue or comment content
-    $('.edit-content').on('click', async function (event) {
+    $(document).on('click', '.edit-content', async function (event) {
       $(this).closest('.dropdown').find('.menu').toggle('visible');
       const $segment = $(this).closest('.header').next();
       const $editContentZone = $segment.find('.edit-content-zone');
@@ -929,6 +1003,9 @@ async function initRepository() {
             dictFileTooBig: $dropzone.data('file-too-big'),
             dictRemoveFile: $dropzone.data('remove-file'),
             timeout: 0,
+            thumbnailMethod: 'contain',
+            thumbnailWidth: 480,
+            thumbnailHeight: 480,
             init() {
               this.on('success', (file, data) => {
                 filenameDict[file.name] = {
@@ -1022,17 +1099,14 @@ async function initRepository() {
               if (data.attachments !== '') {
                 $content.append(`
                   <div class="dropzone-attachments">
-                    <div class="ui clearing divider"></div>
-                    <div class="ui middle aligned padded grid">
-                    </div>
                   </div>
                 `);
-                $content.find('.dropzone-attachments .grid').html(data.attachments);
+                $content.find('.dropzone-attachments').replaceWith(data.attachments);
               }
             } else if (data.attachments === '') {
               $content.find('.dropzone-attachments').remove();
             } else {
-              $content.find('.dropzone-attachments .grid').html(data.attachments);
+              $content.find('.dropzone-attachments').replaceWith(data.attachments);
             }
             if (dz) {
               dz.emit('submit');
@@ -1061,7 +1135,7 @@ async function initRepository() {
     });
 
     // Delete comment
-    $('.delete-comment').on('click', function () {
+    $(document).on('click', '.delete-comment', function () {
       const $this = $(this);
       if (window.confirm($this.data('locale'))) {
         $.post($this.data('url'), {
@@ -1070,6 +1144,15 @@ async function initRepository() {
           const $conversationHolder = $this.closest('.conversation-holder');
           $(`#${$this.data('comment-id')}`).remove();
           if ($conversationHolder.length && !$conversationHolder.find('.comment').length) {
+            const path = $conversationHolder.data('path');
+            const side = $conversationHolder.data('side');
+            const idx = $conversationHolder.data('idx');
+            const lineType = $conversationHolder.closest('tr').data('line-type');
+            if (lineType === 'same') {
+              $(`a.add-code-comment[data-path="${path}"][data-idx="${idx}"]`).removeClass('invisible');
+            } else {
+              $(`a.add-code-comment[data-path="${path}"][data-side="${side}"][data-idx="${idx}"]`).removeClass('invisible');
+            }
             $conversationHolder.remove();
           }
         });
@@ -1079,7 +1162,7 @@ async function initRepository() {
 
     // Change status
     const $statusButton = $('#status-button');
-    $('#comment-form .edit_area').on('keyup', function () {
+    $('#comment-form textarea').on('keyup', function () {
       if ($(this).val().length === 0) {
         $statusButton.text($statusButton.data('status'));
       } else {
@@ -1097,6 +1180,8 @@ async function initRepository() {
       e.preventDefault();
       $(`.${$(this).data('do')}-fields`).show();
       $(this).parent().hide();
+      $('.instruct-toggle').hide();
+      $('.instruct-content').hide();
     });
     $('.merge-button > .dropdown').dropdown({
       onChange(_text, _value, $choice) {
@@ -1110,35 +1195,25 @@ async function initRepository() {
       e.preventDefault();
       $(this).closest('.form').hide();
       $mergeButton.parent().show();
+      $('.instruct-toggle').show();
     });
     initReactionSelector();
-  }
-
-  // Diff
-  if ($('.repository.diff').length > 0) {
-    $('.diff-counter').each(function () {
-      const $item = $(this);
-      const addLine = $item.find('span[data-line].add').data('line');
-      const delLine = $item.find('span[data-line].del').data('line');
-      const addPercent = parseFloat(addLine) / (parseFloat(addLine) + parseFloat(delLine)) * 100;
-      $item.find('.bar .add').css('width', `${addPercent}%`);
-    });
   }
 
   // Quick start and repository home
   $('#repo-clone-ssh').on('click', function () {
     $('.clone-url').text($(this).data('link'));
     $('#repo-clone-url').val($(this).data('link'));
-    $(this).addClass('blue');
-    $('#repo-clone-https').removeClass('blue');
+    $(this).addClass('primary');
+    $('#repo-clone-https').removeClass('primary');
     localStorage.setItem('repo-clone-protocol', 'ssh');
   });
   $('#repo-clone-https').on('click', function () {
     $('.clone-url').text($(this).data('link'));
     $('#repo-clone-url').val($(this).data('link'));
-    $(this).addClass('blue');
+    $(this).addClass('primary');
     if ($('#repo-clone-ssh').length > 0) {
-      $('#repo-clone-ssh').removeClass('blue');
+      $('#repo-clone-ssh').removeClass('primary');
       localStorage.setItem('repo-clone-protocol', 'https');
     }
   });
@@ -1185,6 +1260,12 @@ async function initRepository() {
   }
 }
 
+function initPullRequestMergeInstruction() {
+  $('.show-instruction').on('click', () => {
+    $('.instruct-content').toggle();
+  });
+}
+
 function initPullRequestReview() {
   if (window.location.hash && window.location.hash.startsWith('#issuecomment-')) {
     const commentDiv = $(window.location.hash);
@@ -1202,7 +1283,7 @@ function initPullRequestReview() {
     }
   }
 
-  $('.show-outdated').on('click', function (e) {
+  $(document).on('click', '.show-outdated', function (e) {
     e.preventDefault();
     const id = $(this).data('comment');
     $(this).addClass('hide');
@@ -1211,7 +1292,7 @@ function initPullRequestReview() {
     $(`#hide-outdated-${id}`).removeClass('hide');
   });
 
-  $('.hide-outdated').on('click', function (e) {
+  $(document).on('click', '.hide-outdated', function (e) {
     e.preventDefault();
     const id = $(this).data('comment');
     $(this).addClass('hide');
@@ -1220,7 +1301,7 @@ function initPullRequestReview() {
     $(`#show-outdated-${id}`).removeClass('hide');
   });
 
-  $('button.comment-form-reply').on('click', function (e) {
+  $(document).on('click', 'button.comment-form-reply', function (e) {
     e.preventDefault();
     $(this).hide();
     const form = $(this).parent().find('.comment-form');
@@ -1251,13 +1332,12 @@ function initPullRequestReview() {
   $('.btn-review').on('click', function (e) {
     e.preventDefault();
     $(this).closest('.dropdown').find('.menu').toggle('visible');
-  }).closest('.dropdown').find('.link.close')
-    .on('click', function (e) {
-      e.preventDefault();
-      $(this).closest('.menu').toggle('visible');
-    });
+  }).closest('.dropdown').find('.close').on('click', function (e) {
+    e.preventDefault();
+    $(this).closest('.menu').toggle('visible');
+  });
 
-  $('.add-code-comment').on('click', function (e) {
+  $('a.add-code-comment').on('click', async function (e) {
     if ($(e.target).hasClass('btn-add-single')) return; // https://github.com/go-gitea/gitea/issues/4745
     e.preventDefault();
 
@@ -1265,18 +1345,13 @@ function initPullRequestReview() {
     const side = $(this).data('side');
     const idx = $(this).data('idx');
     const path = $(this).data('path');
-    const form = $('#pull_review_add_comment').html();
     const tr = $(this).closest('tr');
-
-    const oldLineNum = tr.find('.lines-num-old').data('line-num');
-    const newLineNum = tr.find('.lines-num-new').data('line-num');
-    const addCommentKey = `${oldLineNum}|${newLineNum}`;
-    if (document.querySelector(`[data-add-comment-key="${addCommentKey}"]`)) return; // don't add same comment box twice
+    const lineType = tr.data('line-type');
 
     let ntr = tr.next();
     if (!ntr.hasClass('add-comment')) {
       ntr = $(`
-        <tr class="add-comment" data-add-comment-key="${addCommentKey}">
+        <tr class="add-comment" data-line-type="${lineType}">
           ${isSplit ? `
             <td class="lines-num"></td>
             <td class="lines-type-marker"></td>
@@ -1285,8 +1360,7 @@ function initPullRequestReview() {
             <td class="lines-type-marker"></td>
             <td class="add-comment-right"></td>
           ` : `
-            <td class="lines-num"></td>
-            <td class="lines-num"></td>
+            <td colspan="2" class="lines-num"></td>
             <td class="add-comment-left add-comment-right" colspan="2"></td>
           `}
         </tr>`);
@@ -1295,24 +1369,19 @@ function initPullRequestReview() {
 
     const td = ntr.find(`.add-comment-${side}`);
     let commentCloud = td.find('.comment-code-cloud');
-    if (commentCloud.length === 0) {
-      td.html(form);
+    if (commentCloud.length === 0 && !ntr.find('button[name="is_review"]').length) {
+      const data = await $.get($(this).data('new-comment-url'));
+      td.html(data);
       commentCloud = td.find('.comment-code-cloud');
       assingMenuAttributes(commentCloud.find('.menu'));
-
       td.find("input[name='line']").val(idx);
       td.find("input[name='side']").val(side === 'left' ? 'previous' : 'proposed');
       td.find("input[name='path']").val(path);
-    }
-    const $textarea = commentCloud.find('textarea');
-    attachTribute($textarea.get(), {mentions: true, emoji: true});
-
-    if (!isMobile()) {
+      const $textarea = commentCloud.find('textarea');
+      attachTribute($textarea.get(), {mentions: true, emoji: true});
       const $simplemde = setCommentSimpleMDE($textarea);
       $textarea.focus();
       $simplemde.codemirror.focus();
-    } else {
-      $textarea.focus();
     }
   });
 }
@@ -1359,35 +1428,33 @@ function initWikiForm() {
   const $editArea = $('.repository.wiki textarea#edit_area');
   let sideBySideChanges = 0;
   let sideBySideTimeout = null;
-  if ($editArea.length > 0 && isMobile()) {
-    $editArea.css('display', 'inline-block');
-    return;
-  }
+  let hasSimpleMDE = true;
   if ($editArea.length > 0) {
     const simplemde = new SimpleMDE({
       autoDownloadFontAwesome: false,
       element: $editArea[0],
       forceSync: true,
       previewRender(plainText, preview) { // Async method
+        // FIXME: still send render request when return back to edit mode
+        const render = function () {
+          sideBySideChanges = 0;
+          if (sideBySideTimeout !== null) {
+            clearTimeout(sideBySideTimeout);
+            sideBySideTimeout = null;
+          }
+          $.post($editArea.data('url'), {
+            _csrf: csrf,
+            mode: 'gfm',
+            context: $editArea.data('context'),
+            text: plainText,
+            wiki: true
+          }, (data) => {
+            preview.innerHTML = `<div class="markdown ui segment">${data}</div>`;
+            renderMarkdownContent();
+          });
+        };
+
         setTimeout(() => {
-          // FIXME: still send render request when return back to edit mode
-          const render = function () {
-            sideBySideChanges = 0;
-            if (sideBySideTimeout !== null) {
-              clearTimeout(sideBySideTimeout);
-              sideBySideTimeout = null;
-            }
-            $.post($editArea.data('url'), {
-              _csrf: csrf,
-              mode: 'gfm',
-              context: $editArea.data('context'),
-              text: plainText,
-              wiki: true
-            }, (data) => {
-              preview.innerHTML = `<div class="markdown ui segment">${data}</div>`;
-              renderMarkdownContent();
-            });
-          };
           if (!simplemde.isSideBySideActive()) {
             render();
           } else {
@@ -1458,7 +1525,12 @@ function initWikiForm() {
           name: 'revert-to-textarea',
           action(e) {
             e.toTextArea();
-            $editArea.css('display', 'inline-block');
+            hasSimpleMDE = false;
+            const $form = $('.repository.wiki.new .ui.form');
+            const $root = $form.find('.field.content');
+            const loading = $root.data('loading');
+            $root.append(`<div class="ui bottom tab markdown" data-tab="preview">${loading}</div>`);
+            initCommentPreviewTab($form);
           },
           className: 'fa fa-file',
           title: 'Revert to simple textarea',
@@ -1471,17 +1543,28 @@ function initWikiForm() {
       const $bEdit = $('.repository.wiki.new .previewtabs a[data-tab="write"]');
       const $bPrev = $('.repository.wiki.new .previewtabs a[data-tab="preview"]');
       const $toolbar = $('.editor-toolbar');
-      const $bPreview = $('.editor-toolbar a.fa-eye');
+      const $bPreview = $('.editor-toolbar button.preview');
       const $bSideBySide = $('.editor-toolbar a.fa-columns');
-      $bEdit.on('click', () => {
+      $bEdit.on('click', (e) => {
+        if (!hasSimpleMDE) {
+          return false;
+        }
+        e.stopImmediatePropagation();
         if ($toolbar.hasClass('disabled-for-preview')) {
           $bPreview.trigger('click');
         }
+
+        return false;
       });
-      $bPrev.on('click', () => {
+      $bPrev.on('click', (e) => {
+        if (!hasSimpleMDE) {
+          return false;
+        }
+        e.stopImmediatePropagation();
         if (!$toolbar.hasClass('disabled-for-preview')) {
           $bPreview.trigger('click');
         }
+        return false;
       });
       $bPreview.on('click', () => {
         setTimeout(() => {
@@ -1501,6 +1584,8 @@ function initWikiForm() {
             }
           }
         }, 0);
+
+        return false;
       });
       $bSideBySide.on('click', () => {
         sideBySideChanges = 10;
@@ -1609,16 +1694,12 @@ async function initEditor() {
     let value;
     let parts;
 
-    if (e.keyCode === 8) {
-      if ($(this).getCursorPosition() === 0) {
-        if ($section.length > 0) {
-          value = $section.last().find('a').text();
-          $(this).val(value + $(this).val());
-          $(this)[0].setSelectionRange(value.length, value.length);
-          $section.last().remove();
-          $divider.last().remove();
-        }
-      }
+    if (e.keyCode === 8 && $(this).getCursorPosition() === 0 && $section.length > 0) {
+      value = $section.last().find('a').text();
+      $(this).val(value + $(this).val());
+      $(this)[0].setSelectionRange(value.length, value.length);
+      $section.last().remove();
+      $divider.last().remove();
     }
     if (e.keyCode === 191) {
       parts = $(this).val().split('/');
@@ -1688,6 +1769,20 @@ async function initEditor() {
   });
 }
 
+function initReleaseEditor() {
+  const $editor = $('.repository.new.release .content-editor');
+  if ($editor.length === 0) {
+    return false;
+  }
+
+  const $textarea = $editor.find('textarea');
+  attachTribute($textarea.get(), {mentions: false, emoji: true});
+  const $files = $editor.parent().find('.files');
+  const $simplemde = setCommentSimpleMDE($textarea);
+  initCommentPreviewTab($editor);
+  initSimpleMDEImagePaste($simplemde, $files);
+}
+
 function initOrganization() {
   if ($('.organization').length === 0) {
     return;
@@ -1697,10 +1792,13 @@ function initOrganization() {
   if ($('.organization.settings.options').length > 0) {
     $('#org_name').on('keyup', function () {
       const $prompt = $('#org-name-change-prompt');
+      const $prompt_redirect = $('#org-name-change-redirect-prompt');
       if ($(this).val().toString().toLowerCase() !== $(this).data('org-name').toString().toLowerCase()) {
         $prompt.show();
+        $prompt_redirect.show();
       } else {
         $prompt.hide();
+        $prompt_redirect.hide();
       }
     });
   }
@@ -1716,24 +1814,22 @@ function initUserSettings() {
   if ($('.user.settings.profile').length > 0) {
     $('#username').on('keyup', function () {
       const $prompt = $('#name-change-prompt');
+      const $prompt_redirect = $('#name-change-redirect-prompt');
       if ($(this).val().toString().toLowerCase() !== $(this).data('name').toString().toLowerCase()) {
         $prompt.show();
+        $prompt_redirect.show();
       } else {
         $prompt.hide();
+        $prompt_redirect.hide();
       }
     });
   }
 }
 
-function initGithook() {
-  if ($('.edit.githook').length === 0) {
-    return;
-  }
-
-  CodeMirror.autoLoadMode(CodeMirror.fromTextArea($('#content')[0], {
-    lineNumbers: true,
-    mode: 'shell'
-  }), 'shell');
+async function initGithook() {
+  if ($('.edit.githook').length === 0) return;
+  const filename = document.querySelector('.hook-filename').textContent;
+  await createMonaco($('#content')[0], filename, {language: 'shell'});
 }
 
 function initWebhook() {
@@ -1784,6 +1880,7 @@ function initAdmin() {
   if ($('.admin.new.user').length > 0 || $('.admin.edit.user').length > 0) {
     $('#login_type').on('change', function () {
       if ($(this).val().substring(0, 1) === '0') {
+        $('#user_name').removeAttr('disabled');
         $('#login_name').removeAttr('required');
         $('.non-local').hide();
         $('.local').show();
@@ -1793,6 +1890,7 @@ function initAdmin() {
           $('#password').attr('required', 'required');
         }
       } else {
+        $('#user_name').attr('disabled', 'disabled');
         $('#login_name').attr('required', 'required');
         $('.non-local').show();
         $('.local').hide();
@@ -1821,16 +1919,19 @@ function initAdmin() {
     }
   }
 
-  function onOAuth2Change() {
+  function onOAuth2Change(applyDefaultValues) {
     $('.open_id_connect_auto_discovery_url, .oauth2_use_custom_url').hide();
     $('.open_id_connect_auto_discovery_url input[required]').removeAttr('required');
 
     const provider = $('#oauth2_provider').val();
     switch (provider) {
-      case 'github':
-      case 'gitlab':
       case 'gitea':
       case 'nextcloud':
+      case 'mastodon':
+        $('#oauth2_use_custom_url').attr('checked', 'checked');
+        // fallthrough intentional
+      case 'github':
+      case 'gitlab':
         $('.oauth2_use_custom_url').show();
         break;
       case 'openidConnect':
@@ -1838,19 +1939,21 @@ function initAdmin() {
         $('.open_id_connect_auto_discovery_url').show();
         break;
     }
-    onOAuth2UseCustomURLChange();
+    onOAuth2UseCustomURLChange(applyDefaultValues);
   }
 
-  function onOAuth2UseCustomURLChange() {
+  function onOAuth2UseCustomURLChange(applyDefaultValues) {
     const provider = $('#oauth2_provider').val();
     $('.oauth2_use_custom_url_field').hide();
     $('.oauth2_use_custom_url_field input[required]').removeAttr('required');
 
     if ($('#oauth2_use_custom_url').is(':checked')) {
-      $('#oauth2_token_url').val($(`#${provider}_token_url`).val());
-      $('#oauth2_auth_url').val($(`#${provider}_auth_url`).val());
-      $('#oauth2_profile_url').val($(`#${provider}_profile_url`).val());
-      $('#oauth2_email_url').val($(`#${provider}_email_url`).val());
+      if (applyDefaultValues) {
+        $('#oauth2_token_url').val($(`#${provider}_token_url`).val());
+        $('#oauth2_auth_url').val($(`#${provider}_auth_url`).val());
+        $('#oauth2_profile_url').val($(`#${provider}_profile_url`).val());
+        $('#oauth2_email_url').val($(`#${provider}_email_url`).val());
+      }
 
       switch (provider) {
         case 'github':
@@ -1863,6 +1966,10 @@ function initAdmin() {
           $('.oauth2_token_url input, .oauth2_auth_url input, .oauth2_profile_url input').attr('required', 'required');
           $('.oauth2_token_url, .oauth2_auth_url, .oauth2_profile_url').show();
           $('#oauth2_email_url').val('');
+          break;
+        case 'mastodon':
+          $('.oauth2_auth_url input').attr('required', 'required');
+          $('.oauth2_auth_url').show();
           break;
       }
     }
@@ -1907,7 +2014,7 @@ function initAdmin() {
         case '6': // OAuth2
           $('.oauth2').show();
           $('.oauth2 div.required:not(.oauth2_use_custom_url,.oauth2_use_custom_url_field,.open_id_connect_auto_discovery_url) input').attr('required', 'required');
-          onOAuth2Change();
+          onOAuth2Change(true);
           break;
         case '7': // SSPI
           $('.sspi').show();
@@ -1925,8 +2032,8 @@ function initAdmin() {
     $('#auth_type').trigger('change');
     $('#security_protocol').on('change', onSecurityProtocolChange);
     $('#use_paged_search').on('change', onUsePagedSearchChange);
-    $('#oauth2_provider').on('change', onOAuth2Change);
-    $('#oauth2_use_custom_url').on('change', onOAuth2UseCustomURLChange);
+    $('#oauth2_provider').on('change', () => onOAuth2Change(true));
+    $('#oauth2_use_custom_url').on('change', () => onOAuth2UseCustomURLChange(true));
     $('#groups_enabled').on('change', onVerifyGroupMembershipChange);
   }
   // Edit authentication
@@ -1940,9 +2047,9 @@ function initAdmin() {
         $('#use_paged_search').on('change', onUsePagedSearchChange);
       }
     } else if (authType === '6') {
-      $('#oauth2_provider').on('change', onOAuth2Change);
-      $('#oauth2_use_custom_url').on('change', onOAuth2UseCustomURLChange);
-      onOAuth2Change();
+      $('#oauth2_provider').on('change', () => onOAuth2Change(true));
+      $('#oauth2_use_custom_url').on('change', () => onOAuth2UseCustomURLChange(false));
+      onOAuth2Change(false);
     }
   }
 
@@ -2074,6 +2181,45 @@ function searchRepositories() {
   });
 }
 
+function showCodeViewMenu() {
+  // Get clicked tr
+  const $code_tr = $('.code-view td.lines-code.active').parent();
+
+  // Reset code line marker
+  $('.code-view-menu-list').appendTo($('.code-view'));
+  $('.code-line-marker').remove();
+
+  // Generate new one
+  const icon_wrap = $('<div>', {
+    class: 'code-line-marker'
+  }).prependTo($code_tr.find('td:eq(0)').get(0)).hide();
+
+  const a_wrap = $('<a>', {
+    class: 'code-line-link'
+  }).appendTo(icon_wrap);
+
+  $('<i>', {
+    class: 'dropdown icon',
+    style: 'margin: 0px;'
+  }).appendTo(a_wrap);
+
+  icon_wrap.css({
+    left: '-7px',
+    display: 'block',
+  });
+
+  $('.code-view-menu-list').css({
+    'min-width': '220px',
+  });
+
+  // Popup the menu
+  $('.code-line-link').popup({
+    popup: $('.code-view-menu-list'),
+    on: 'click',
+    lastResort: 'bottom left',
+  });
+}
+
 function initCodeView() {
   if ($('.code-view .lines-num').length > 0) {
     $(document).on('click', '.lines-num span', function (e) {
@@ -2086,6 +2232,9 @@ function initCodeView() {
       }
       selectRange($list, $list.filter(`[rel=${$select.attr('id')}]`), (e.shiftKey ? $list.filter('.active').eq(0) : null));
       deSelect();
+
+      // show code view menu marker
+      showCodeViewMenu();
     });
 
     $(window).on('hashchange', () => {
@@ -2100,6 +2249,10 @@ function initCodeView() {
       if (m) {
         $first = $list.filter(`[rel=${m[1]}]`);
         selectRange($list, $first, $list.filter(`[rel=${m[2]}]`));
+
+        // show code view menu marker
+        showCodeViewMenu();
+
         $('html, body').scrollTop($first.offset().top - 200);
         return;
       }
@@ -2107,6 +2260,10 @@ function initCodeView() {
       if (m) {
         $first = $list.filter(`[rel=L${m[2]}]`);
         selectRange($list, $first);
+
+        // show code view menu marker
+        showCodeViewMenu();
+
         $('html, body').scrollTop($first.offset().top - 200);
       }
     }).trigger('hashchange');
@@ -2314,6 +2471,58 @@ function initTemplateSearch() {
   changeOwner();
 }
 
+function initIssueReferenceRepositorySearch() {
+  $('.issue_reference_repository_search')
+    .dropdown({
+      apiSettings: {
+        url: `${AppSubUrl}/api/v1/repos/search?q={query}&limit=20`,
+        onResponse(response) {
+          const filteredResponse = {success: true, results: []};
+          $.each(response.data, (_r, repo) => {
+            filteredResponse.results.push({
+              name: htmlEscape(repo.full_name),
+              value: repo.full_name
+            });
+          });
+          return filteredResponse;
+        },
+        cache: false,
+      },
+      onChange(_value, _text, $choice) {
+        const $form = $choice.closest('form');
+        $form.attr('action', `${AppSubUrl}/${_text}/issues/new`);
+      },
+      fullTextSearch: true
+    });
+}
+
+function initLinkAccountView() {
+  const $lnkUserPage = $('.page-content.user.link-account');
+  if ($lnkUserPage.length === 0) {
+    return false;
+  }
+
+  const $signinTab = $lnkUserPage.find('.item[data-tab="auth-link-signin-tab"]');
+  const $signUpTab = $lnkUserPage.find('.item[data-tab="auth-link-signup-tab"]');
+  const $signInView = $lnkUserPage.find('.tab[data-tab="auth-link-signin-tab"]');
+  const $signUpView = $lnkUserPage.find('.tab[data-tab="auth-link-signup-tab"]');
+
+  $signUpTab.on('click', () => {
+    $signinTab.removeClass('active');
+    $signInView.removeClass('active');
+    $signUpTab.addClass('active');
+    $signUpView.addClass('active');
+    return false;
+  });
+
+  $signinTab.on('click', () => {
+    $signUpTab.removeClass('active');
+    $signUpView.removeClass('active');
+    $signinTab.addClass('active');
+    $signInView.addClass('active');
+  });
+}
+
 $(document).ready(async () => {
   // Show exact time
   $('.time-since').each(function () {
@@ -2324,19 +2533,37 @@ $(document).ready(async () => {
       .attr('title', '');
   });
 
+  // Undo Safari emoji glitch fix at high enough zoom levels
+  if (navigator.userAgent.match('Safari')) {
+    $(window).resize(() => {
+      const px = mqBinarySearch('width', 0, 4096, 1, 'px');
+      const em = mqBinarySearch('width', 0, 1024, 0.01, 'em');
+      if (em * 16 * 1.25 - px <= -1) {
+        $('body').addClass('safari-above125');
+      } else {
+        $('body').removeClass('safari-above125');
+      }
+    });
+  }
+
   // Semantic UI modules.
-  $('.dropdown:not(.custom)').dropdown();
+  $('.dropdown:not(.custom)').dropdown({
+    fullTextSearch: 'exact'
+  });
   $('.jump.dropdown').dropdown({
     action: 'hide',
     onShow() {
       $('.poping.up').popup('hide');
-    }
+    },
+    fullTextSearch: 'exact'
   });
   $('.slide.up.dropdown').dropdown({
-    transition: 'slide up'
+    transition: 'slide up',
+    fullTextSearch: 'exact'
   });
   $('.upward.dropdown').dropdown({
-    direction: 'upward'
+    direction: 'upward',
+    fullTextSearch: 'exact'
   });
   $('.ui.accordion').accordion();
   $('.ui.checkbox').checkbox();
@@ -2368,6 +2595,9 @@ $(document).ready(async () => {
     window.location = $(this).data('href');
   });
 
+  // link-account tab handle
+  initLinkAccountView();
+
   // Dropzone
   const $dropzone = $('#dropzone');
   if ($dropzone.length > 0) {
@@ -2385,6 +2615,9 @@ $(document).ready(async () => {
       dictFileTooBig: $dropzone.data('file-too-big'),
       dictRemoveFile: $dropzone.data('remove-file'),
       timeout: 0,
+      thumbnailMethod: 'contain',
+      thumbnailWidth: 480,
+      thumbnailHeight: 480,
       init() {
         this.on('success', (file, data) => {
           filenameDict[file.name] = data.uuid;
@@ -2478,17 +2711,24 @@ $(document).ready(async () => {
     $(e).trigger('click');
   });
 
-  $('.resolve-conversation').on('click', function (e) {
+  $(document).on('click', '.resolve-conversation', async function (e) {
     e.preventDefault();
-    const id = $(this).data('comment-id');
+    const comment_id = $(this).data('comment-id');
+    const origin = $(this).data('origin');
     const action = $(this).data('action');
     const url = $(this).data('update-url');
 
-    $.post(url, {
-      _csrf: csrf,
-      action,
-      comment_id: id,
-    }).then(reload);
+    const data = await $.post(url, {_csrf: csrf, origin, action, comment_id});
+
+    if ($(this).closest('.conversation-holder').length) {
+      const conversation = $(data);
+      $(this).closest('.conversation-holder').replaceWith(conversation);
+      conversation.find('.dropdown').dropdown();
+      initReactionSelector(conversation);
+      initClipboard();
+    } else {
+      reload();
+    }
   });
 
   buttonsClickOnEnter();
@@ -2499,13 +2739,13 @@ $(document).ready(async () => {
   initMarkdownAnchors();
   initCommentForm();
   initInstall();
+  initArchiveLinks();
   initRepository();
   initMigration();
   initWikiForm();
   initEditForm();
   initEditor();
   initOrganization();
-  initGithook();
   initWebhook();
   initAdmin();
   initCodeView();
@@ -2517,29 +2757,18 @@ $(document).ready(async () => {
   initU2FAuth();
   initU2FRegister();
   initIssueList();
+  initIssueTimetracking();
+  initIssueDue();
   initWipTitle();
   initPullRequestReview();
   initRepoStatusChecker();
   initTemplateSearch();
+  initIssueReferenceRepositorySearch();
   initContextPopups();
   initTableSort();
   initNotificationsTable();
-
-  // Repo clone url.
-  if ($('#repo-clone-url').length > 0) {
-    switch (localStorage.getItem('repo-clone-protocol')) {
-      case 'ssh':
-        if ($('#repo-clone-ssh').length > 0) {
-          $('#repo-clone-ssh').trigger('click');
-        } else {
-          $('#repo-clone-https').trigger('click');
-        }
-        break;
-      default:
-        $('#repo-clone-https').trigger('click');
-        break;
-    }
-  }
+  initPullRequestMergeInstruction();
+  initReleaseEditor();
 
   const routes = {
     'div.user.settings': initUserSettings,
@@ -2558,11 +2787,14 @@ $(document).ready(async () => {
     attachTribute(document.querySelectorAll('#content, .emoji-input')),
     initGitGraph(),
     initClipboard(),
-    initUserHeatmap(),
+    initHeatmap(),
     initProject(),
     initServiceWorker(),
     initNotificationCount(),
+    initStopwatch(),
     renderMarkdownContent(),
+    initGithook(),
+    initImageDiff(),
   ]);
 });
 
@@ -2600,11 +2832,30 @@ function selectRange($list, $select, $from) {
       }
       $list.filter(classes.join(',')).addClass('active');
       changeHash(`#L${a}-L${b}`);
+
+      // add hashchange to permalink
+      const $issue = $('a.ref-in-new-issue');
+      const matched = $issue.attr('href').match(/%23L\d+$|%23L\d+-L\d+$/);
+      if (matched) {
+        $issue.attr('href', $issue.attr('href').replace($issue.attr('href').substr(matched.index), `%23L${a}-L${b}`));
+      } else {
+        $issue.attr('href', `${$issue.attr('href')}%23L${a}-L${b}`);
+      }
+
       return;
     }
   }
   $select.addClass('active');
   changeHash(`#${$select.attr('rel')}`);
+
+  // add hashchange to permalink
+  const $issue = $('a.ref-in-new-issue');
+  const matched = $issue.attr('href').match(/%23L\d+$|%23L\d+-L\d+$/);
+  if (matched) {
+    $issue.attr('href', $issue.attr('href').replace($issue.attr('href').substr(matched.index), `%23${$select.attr('rel')}`));
+  } else {
+    $issue.attr('href', `${$issue.attr('href')}%23${$select.attr('rel')}`);
+  }
 }
 
 $(() => {
@@ -2724,7 +2975,15 @@ function initVueComponents() {
       .replace(/height="[0-9]+"/, 'v-bind:height="size"')
       .replace(/width="[0-9]+"/, 'v-bind:width="size"');
 
-    Vue.component(name, {props: ['size'], template});
+    Vue.component(name, {
+      props: {
+        size: {
+          type: String,
+          default: '16',
+        },
+      },
+      template,
+    });
   }
 
   const vueDelimeters = ['${', '}'];
@@ -2745,9 +3004,14 @@ function initVueComponents() {
         type: Number,
         required: true
       },
+      teamId: {
+        type: Number,
+        required: false,
+        default: 0
+      },
       organizations: {
         type: Array,
-        default: []
+        default: () => [],
       },
       isOrganization: {
         type: Boolean,
@@ -2843,7 +3107,7 @@ function initVueComponents() {
         return this.repos.length > 0 && this.repos.length < this.counts[`${this.reposFilter}:${this.archivedFilter}:${this.privateFilter}`];
       },
       searchURL() {
-        return `${this.suburl}/api/v1/repos/search?sort=updated&order=desc&uid=${this.uid}&q=${this.searchQuery
+        return `${this.suburl}/api/v1/repos/search?sort=updated&order=desc&uid=${this.uid}&team_id=${this.teamId}&q=${this.searchQuery
         }&page=${this.page}&limit=${this.searchLimit}&mode=${this.repoTypes[this.reposFilter].searchMode
         }${this.reposFilter !== 'all' ? '&exclusive=1' : ''
         }${this.archivedFilter === 'archived' ? '&archived=true' : ''}${this.archivedFilter === 'unarchived' ? '&archived=false' : ''
@@ -3024,7 +3288,7 @@ function initVueComponents() {
         this.isLoading = true;
 
         if (!this.reposTotalCount) {
-          const totalCountSearchURL = `${this.suburl}/api/v1/repos/search?sort=updated&order=desc&uid=${this.uid}&q=&page=1&mode=`;
+          const totalCountSearchURL = `${this.suburl}/api/v1/repos/search?sort=updated&order=desc&uid=${this.uid}&team_id=${this.teamId}&q=&page=1&mode=`;
           $.getJSON(totalCountSearchURL, (_result, _textStatus, request) => {
             self.reposTotalCount = request.getResponseHeader('X-Total-Count');
           });
@@ -3087,36 +3351,52 @@ function initVueApp() {
   initVueComponents();
 
   new Vue({
-    delimiters: ['${', '}'],
     el,
-    data: {
-      searchLimit: Number((document.querySelector('meta[name=_search_limit]') || {}).content),
-      suburl: AppSubUrl,
-      uid: Number((document.querySelector('meta[name=_context_uid]') || {}).content),
-      activityTopAuthors: window.ActivityTopAuthors || [],
-    },
+    delimiters: ['${', '}'],
     components: {
       ActivityTopAuthors,
+    },
+    data: () => {
+      return {
+        searchLimit: Number((document.querySelector('meta[name=_search_limit]') || {}).content),
+        suburl: AppSubUrl,
+        uid: Number((document.querySelector('meta[name=_context_uid]') || {}).content),
+        activityTopAuthors: window.ActivityTopAuthors || [],
+      };
     },
   });
 }
 
-window.timeAddManual = function () {
-  $('.mini.modal')
-    .modal({
+function initIssueTimetracking() {
+  $(document).on('click', '.issue-add-time', () => {
+    $('.issue-start-time-modal').modal({
       duration: 200,
       onApprove() {
         $('#add_time_manual_form').trigger('submit');
       }
     }).modal('show');
-};
-
-window.toggleStopwatch = function () {
-  $('#toggle_stopwatch_form').trigger('submit');
-};
-window.cancelStopwatch = function () {
-  $('#cancel_stopwatch_form').trigger('submit');
-};
+    $('.issue-start-time-modal input').on('keydown', (e) => {
+      if ((e.keyCode || e.key) === 13) {
+        $('#add_time_manual_form').trigger('submit');
+      }
+    });
+  });
+  $(document).on('click', '.issue-start-time, .issue-stop-time', () => {
+    $('#toggle_stopwatch_form').trigger('submit');
+  });
+  $(document).on('click', '.issue-cancel-time', () => {
+    $('#cancel_stopwatch_form').trigger('submit');
+  });
+  $(document).on('click', 'button.issue-delete-time', function () {
+    const sel = `.issue-delete-time-modal[data-id="${$(this).data('id')}"]`;
+    $(sel).modal({
+      duration: 200,
+      onApprove() {
+        $(`${sel} form`).trigger('submit');
+      }
+    }).modal('show');
+  });
+}
 
 function initFilterBranchTagDropdown(selector) {
   $(selector).each(function () {
@@ -3129,6 +3409,7 @@ function initFilterBranchTagDropdown(selector) {
       noResults: '',
       canCreateBranch: false,
       menuVisible: false,
+      createTag: false,
       active: 0
     };
     $data.find('.item').each(function () {
@@ -3142,24 +3423,30 @@ function initFilterBranchTagDropdown(selector) {
     });
     $data.remove();
     new Vue({
-      delimiters: ['${', '}'],
       el: this,
+      delimiters: ['${', '}'],
       data,
+      computed: {
+        filteredItems() {
+          const items = this.items.filter((item) => {
+            return ((this.mode === 'branches' && item.branch) || (this.mode === 'tags' && item.tag)) &&
+              (!this.searchTerm || item.name.toLowerCase().includes(this.searchTerm.toLowerCase()));
+          });
 
-      beforeMount() {
-        const vm = this;
-
-        this.noResults = vm.$el.getAttribute('data-no-results');
-        this.canCreateBranch = vm.$el.getAttribute('data-can-create-branch') === 'true';
-
-        document.body.addEventListener('click', (event) => {
-          if (vm.$el.contains(event.target)) {
-            return;
+          // no idea how to fix this so linting rule is disabled instead
+          this.active = (items.length === 0 && this.showCreateNewBranch ? 0 : -1); // eslint-disable-line vue/no-side-effects-in-computed-properties
+          return items;
+        },
+        showNoResults() {
+          return this.filteredItems.length === 0 && !this.showCreateNewBranch;
+        },
+        showCreateNewBranch() {
+          if (!this.canCreateBranch || !this.searchTerm) {
+            return false;
           }
-          if (vm.menuVisible) {
-            Vue.set(vm, 'menuVisible', false);
-          }
-        });
+
+          return this.items.filter((item) => item.name.toLowerCase() === this.searchTerm.toLowerCase()).length === 0;
+        }
       },
 
       watch: {
@@ -3170,30 +3457,16 @@ function initFilterBranchTagDropdown(selector) {
         }
       },
 
-      computed: {
-        filteredItems() {
-          const vm = this;
+      beforeMount() {
+        this.noResults = this.$el.getAttribute('data-no-results');
+        this.canCreateBranch = this.$el.getAttribute('data-can-create-branch') === 'true';
 
-          const items = vm.items.filter((item) => {
-            return ((vm.mode === 'branches' && item.branch) || (vm.mode === 'tags' && item.tag)) &&
-              (!vm.searchTerm || item.name.toLowerCase().includes(vm.searchTerm.toLowerCase()));
-          });
-
-          vm.active = (items.length === 0 && vm.showCreateNewBranch ? 0 : -1);
-
-          return items;
-        },
-        showNoResults() {
-          return this.filteredItems.length === 0 && !this.showCreateNewBranch;
-        },
-        showCreateNewBranch() {
-          const vm = this;
-          if (!this.canCreateBranch || !vm.searchTerm || vm.mode === 'tags') {
-            return false;
+        document.body.addEventListener('click', (event) => {
+          if (this.$el.contains(event.target)) return;
+          if (this.menuVisible) {
+            Vue.set(this, 'menuVisible', false);
           }
-
-          return vm.items.filter((item) => item.name.toLowerCase() === vm.searchTerm.toLowerCase()).length === 0;
-        }
+        });
       },
 
       methods: {
@@ -3206,15 +3479,12 @@ function initFilterBranchTagDropdown(selector) {
           window.location.href = item.url;
         },
         createNewBranch() {
-          if (!this.showCreateNewBranch) {
-            return;
-          }
+          if (!this.showCreateNewBranch) return;
           $(this.$refs.newBranchForm).trigger('submit');
         },
         focusSearchField() {
-          const vm = this;
           Vue.nextTick(() => {
-            vm.$refs.searchField.focus();
+            this.$refs.searchField.focus();
           });
         },
         getSelected() {
@@ -3231,15 +3501,12 @@ function initFilterBranchTagDropdown(selector) {
         },
         scrollToActive() {
           let el = this.$refs[`listItem${this.active}`];
-          if (!el || el.length === 0) {
-            return;
-          }
+          if (!el || !el.length) return;
           if (Array.isArray(el)) {
             el = el[0];
           }
 
           const cont = this.$refs.scrollContainer;
-
           if (el.offsetTop < cont.scrollTop) {
             cont.scrollTop = el.offsetTop;
           } else if (el.offsetTop + el.clientHeight > cont.scrollTop + cont.clientHeight) {
@@ -3247,49 +3514,41 @@ function initFilterBranchTagDropdown(selector) {
           }
         },
         keydown(event) {
-          const vm = this;
-          if (event.keyCode === 40) {
-            // arrow down
+          if (event.keyCode === 40) { // arrow down
             event.preventDefault();
 
-            if (vm.active === -1) {
-              vm.active = vm.getSelectedIndexInFiltered();
+            if (this.active === -1) {
+              this.active = this.getSelectedIndexInFiltered();
             }
 
-            if (vm.active + (vm.showCreateNewBranch ? 0 : 1) >= vm.filteredItems.length) {
+            if (this.active + (this.showCreateNewBranch ? 0 : 1) >= this.filteredItems.length) {
               return;
             }
-            vm.active++;
-            vm.scrollToActive();
-          }
-          if (event.keyCode === 38) {
-            // arrow up
+            this.active++;
+            this.scrollToActive();
+          } else if (event.keyCode === 38) { // arrow up
             event.preventDefault();
 
-            if (vm.active === -1) {
-              vm.active = vm.getSelectedIndexInFiltered();
+            if (this.active === -1) {
+              this.active = this.getSelectedIndexInFiltered();
             }
 
-            if (vm.active <= 0) {
+            if (this.active <= 0) {
               return;
             }
-            vm.active--;
-            vm.scrollToActive();
-          }
-          if (event.keyCode === 13) {
-            // enter
+            this.active--;
+            this.scrollToActive();
+          } else if (event.keyCode === 13) { // enter
             event.preventDefault();
 
-            if (vm.active >= vm.filteredItems.length) {
-              vm.createNewBranch();
-            } else if (vm.active >= 0) {
-              vm.selectItem(vm.filteredItems[vm.active]);
+            if (this.active >= this.filteredItems.length) {
+              this.createNewBranch();
+            } else if (this.active >= 0) {
+              this.selectItem(this.filteredItems[this.active]);
             }
-          }
-          if (event.keyCode === 27) {
-            // escape
+          } else if (event.keyCode === 27) { // escape
             event.preventDefault();
-            vm.menuVisible = false;
+            this.menuVisible = false;
           }
         }
       }
@@ -3356,7 +3615,7 @@ function initTopicbar() {
 
           const last = viewDiv.children('a').last();
           for (let i = 0; i < topicArray.length; i++) {
-            const link = $('<a class="ui repo-topic small label topic"></a>');
+            const link = $('<a class="ui repo-topic large label topic"></a>');
             link.attr('href', `${AppSubUrl}/explore/repos?q=${encodeURIComponent(topicArray[i])}&topic=1`);
             link.text(topicArray[i]);
             link.insertBefore(last);
@@ -3392,6 +3651,7 @@ function initTopicbar() {
   topicDropdown.dropdown({
     allowAdditions: true,
     forceSelection: false,
+    fullTextSearch: 'exact',
     fields: {name: 'description', value: 'data-value'},
     saveRemoteData: false,
     label: {
@@ -3413,10 +3673,6 @@ function initTopicbar() {
           success: false,
           results: [],
         };
-        const stripTags = function (text) {
-          return text.replace(/<[^>]*>?/gm, '');
-        };
-
         const query = stripTags(this.urlData.query.trim());
         let found_query = false;
         const current_topics = [];
@@ -3498,16 +3754,7 @@ function initTopicbar() {
   });
 }
 
-window.toggleDeadlineForm = function () {
-  $('#deadlineForm').fadeToggle(150);
-};
-
-window.setDeadline = function () {
-  const deadline = $('#deadlineDate').val();
-  window.updateDeadline(deadline);
-};
-
-window.updateDeadline = function (deadlineString) {
+function updateDeadline(deadlineString) {
   $('#deadline-err-invalid-date').hide();
   $('#deadline-loader').addClass('loading');
 
@@ -3541,7 +3788,20 @@ window.updateDeadline = function (deadlineString) {
       $('#deadline-err-invalid-date').show();
     }
   });
-};
+}
+
+function initIssueDue() {
+  $(document).on('click', '.issue-due-edit', () => {
+    $('#deadlineForm').fadeToggle(150);
+  });
+  $(document).on('click', '.issue-due-remove', () => {
+    updateDeadline('');
+  });
+  $(document).on('submit', '.issue-due-form', () => {
+    updateDeadline($('#deadlineDate').val());
+    return false;
+  });
+}
 
 window.deleteDependencyModal = function (id, type) {
   $('.remove-dependency')
@@ -3620,6 +3880,28 @@ function initIssueList() {
     }
   });
 }
+
+$(document).on('click', 'button[name="is_review"]', (e) => {
+  $(e.target).closest('form').append('<input type="hidden" name="is_review" value="true">');
+});
+
+$(document).on('submit', '.conversation-holder form', async (e) => {
+  e.preventDefault();
+  const form = $(e.target);
+  const newConversationHolder = $(await $.post(form.attr('action'), form.serialize()));
+  const {path, side, idx} = newConversationHolder.data();
+
+  form.closest('.conversation-holder').replaceWith(newConversationHolder);
+  if (form.closest('tr').data('line-type') === 'same') {
+    $(`a.add-code-comment[data-path="${path}"][data-idx="${idx}"]`).addClass('invisible');
+  } else {
+    $(`a.add-code-comment[data-path="${path}"][data-side="${side}"][data-idx="${idx}"]`).addClass('invisible');
+  }
+  newConversationHolder.find('.dropdown').dropdown();
+  initReactionSelector(newConversationHolder);
+  initClipboard();
+});
+
 window.cancelCodeComment = function (btn) {
   const form = $(btn).closest('form');
   if (form.length > 0 && form.hasClass('comment-form')) {
@@ -3627,13 +3909,6 @@ window.cancelCodeComment = function (btn) {
     form.parent().find('button.comment-form-reply').show();
   } else {
     form.closest('.comment-code-cloud').remove();
-  }
-};
-
-window.submitReply = function (btn) {
-  const form = $(btn).closest('form');
-  if (form.length > 0 && form.hasClass('comment-form')) {
-    form.trigger('submit');
   }
 };
 

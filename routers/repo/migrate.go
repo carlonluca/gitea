@@ -6,17 +6,20 @@
 package repo
 
 import (
+	"net/http"
 	"strings"
 
 	"code.gitea.io/gitea/models"
-	"code.gitea.io/gitea/modules/auth"
 	"code.gitea.io/gitea/modules/base"
 	"code.gitea.io/gitea/modules/context"
+	auth "code.gitea.io/gitea/modules/forms"
+	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/migrations"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/task"
 	"code.gitea.io/gitea/modules/util"
+	"code.gitea.io/gitea/modules/web"
 )
 
 const (
@@ -25,17 +28,24 @@ const (
 
 // Migrate render migration of repository page
 func Migrate(ctx *context.Context) {
-	ctx.Data["Services"] = append([]structs.GitServiceType{structs.PlainGitService}, structs.SupportedFullGitService...)
-	serviceType := ctx.QueryInt("service_type")
+	if setting.Repository.DisableMigrations {
+		ctx.Error(http.StatusForbidden, "Migrate: the site administrator has disabled migrations")
+		return
+	}
+
+	serviceType := structs.GitServiceType(ctx.QueryInt("service_type"))
+
+	setMigrationContextData(ctx, serviceType)
+
 	if serviceType == 0 {
+		ctx.Data["Org"] = ctx.Query("org")
+		ctx.Data["Mirror"] = ctx.Query("mirror")
+
 		ctx.HTML(200, tplMigrate)
 		return
 	}
 
-	ctx.Data["Title"] = ctx.Tr("new_migrate")
 	ctx.Data["private"] = getRepoPrivate(ctx)
-	ctx.Data["IsForcedPrivate"] = setting.Repository.ForcePrivate
-	ctx.Data["DisableMirrors"] = setting.Repository.DisableMirrors
 	ctx.Data["mirror"] = ctx.Query("mirror") == "1"
 	ctx.Data["wiki"] = ctx.Query("wiki") == "1"
 	ctx.Data["milestones"] = ctx.Query("milestones") == "1"
@@ -43,9 +53,6 @@ func Migrate(ctx *context.Context) {
 	ctx.Data["issues"] = ctx.Query("issues") == "1"
 	ctx.Data["pull_requests"] = ctx.Query("pull_requests") == "1"
 	ctx.Data["releases"] = ctx.Query("releases") == "1"
-	ctx.Data["LFSActive"] = setting.LFS.StartServer
-	// Plain git should be first
-	ctx.Data["service"] = structs.GitServiceType(serviceType)
 
 	ctxUser := checkContextUser(ctx, ctx.QueryInt64("org"))
 	if ctx.Written() {
@@ -53,10 +60,15 @@ func Migrate(ctx *context.Context) {
 	}
 	ctx.Data["ContextUser"] = ctxUser
 
-	ctx.HTML(200, base.TplName("repo/migrate/"+structs.GitServiceType(serviceType).Name()))
+	ctx.HTML(200, base.TplName("repo/migrate/"+serviceType.Name()))
 }
 
 func handleMigrateError(ctx *context.Context, owner *models.User, err error, name string, tpl base.TplName, form *auth.MigrateRepoForm) {
+	if setting.Repository.DisableMigrations {
+		ctx.Error(http.StatusForbidden, "MigrateError: the site administrator has disabled migrations")
+		return
+	}
+
 	switch {
 	case migrations.IsRateLimitError(err):
 		ctx.RenderWithErr(ctx.Tr("form.visit_rate_limit"), tpl, form)
@@ -86,7 +98,7 @@ func handleMigrateError(ctx *context.Context, owner *models.User, err error, nam
 		ctx.Data["Err_RepoName"] = true
 		ctx.RenderWithErr(ctx.Tr("repo.form.name_pattern_not_allowed", err.(models.ErrNamePatternNotAllowed).Pattern), tpl, form)
 	default:
-		remoteAddr, _ := auth.ParseRemoteAddr(form.CloneAddr, form.AuthUsername, form.AuthPassword, owner)
+		remoteAddr, _ := auth.ParseRemoteAddr(form.CloneAddr, form.AuthUsername, form.AuthPassword)
 		err = util.URLSanitizedError(err, remoteAddr)
 		if strings.Contains(err.Error(), "Authentication failed") ||
 			strings.Contains(err.Error(), "Bad credentials") ||
@@ -103,13 +115,16 @@ func handleMigrateError(ctx *context.Context, owner *models.User, err error, nam
 }
 
 // MigratePost response for migrating from external git repository
-func MigratePost(ctx *context.Context, form auth.MigrateRepoForm) {
-	ctx.Data["Title"] = ctx.Tr("new_migrate")
-	// Plain git should be first
-	ctx.Data["service"] = structs.GitServiceType(form.Service)
-	ctx.Data["Services"] = append([]structs.GitServiceType{structs.PlainGitService}, structs.SupportedFullGitService...)
+func MigratePost(ctx *context.Context) {
+	form := web.GetForm(ctx).(*auth.MigrateRepoForm)
+	if setting.Repository.DisableMigrations {
+		ctx.Error(http.StatusForbidden, "MigratePost: the site administrator has disabled migrations")
+		return
+	}
 
-	tpl := base.TplName("repo/migrate/" + structs.GitServiceType(form.Service).Name())
+	serviceType := structs.GitServiceType(form.Service)
+
+	setMigrationContextData(ctx, serviceType)
 
 	ctxUser := checkContextUser(ctx, form.UID)
 	if ctx.Written() {
@@ -117,35 +132,50 @@ func MigratePost(ctx *context.Context, form auth.MigrateRepoForm) {
 	}
 	ctx.Data["ContextUser"] = ctxUser
 
+	tpl := base.TplName("repo/migrate/" + serviceType.Name())
+
 	if ctx.HasError() {
 		ctx.HTML(200, tpl)
 		return
 	}
 
-	remoteAddr, err := auth.ParseRemoteAddr(form.CloneAddr, form.AuthUsername, form.AuthPassword, ctx.User)
+	remoteAddr, err := auth.ParseRemoteAddr(form.CloneAddr, form.AuthUsername, form.AuthPassword)
+	if err == nil {
+		err = migrations.IsMigrateURLAllowed(remoteAddr, ctx.User)
+	}
 	if err != nil {
 		if models.IsErrInvalidCloneAddr(err) {
 			ctx.Data["Err_CloneAddr"] = true
-			addrErr := err.(models.ErrInvalidCloneAddr)
+			addrErr := err.(*models.ErrInvalidCloneAddr)
 			switch {
+			case addrErr.IsProtocolInvalid:
+				ctx.RenderWithErr(ctx.Tr("repo.mirror_address_protocol_invalid"), tpl, &form)
 			case addrErr.IsURLError:
 				ctx.RenderWithErr(ctx.Tr("form.url_error"), tpl, &form)
 			case addrErr.IsPermissionDenied:
-				ctx.RenderWithErr(ctx.Tr("repo.migrate.permission_denied"), tpl, &form)
+				if addrErr.LocalPath {
+					ctx.RenderWithErr(ctx.Tr("repo.migrate.permission_denied"), tpl, &form)
+				} else if len(addrErr.PrivateNet) == 0 {
+					ctx.RenderWithErr(ctx.Tr("repo.migrate.permission_denied_blocked"), tpl, &form)
+				} else {
+					ctx.RenderWithErr(ctx.Tr("repo.migrate.permission_denied_private_ip"), tpl, &form)
+				}
 			case addrErr.IsInvalidPath:
 				ctx.RenderWithErr(ctx.Tr("repo.migrate.invalid_local_path"), tpl, &form)
 			default:
-				ctx.ServerError("Unknown error", err)
+				log.Error("Error whilst updating url: %v", err)
+				ctx.RenderWithErr(ctx.Tr("form.url_error"), tpl, &form)
 			}
 		} else {
-			ctx.ServerError("ParseRemoteAddr", err)
+			log.Error("Error whilst updating url: %v", err)
+			ctx.RenderWithErr(ctx.Tr("form.url_error"), tpl, &form)
 		}
 		return
 	}
 
 	var opts = migrations.MigrateOptions{
 		OriginalURL:    form.CloneAddr,
-		GitServiceType: structs.GitServiceType(form.Service),
+		GitServiceType: serviceType,
 		CloneAddr:      remoteAddr,
 		RepoName:       form.RepoName,
 		Description:    form.Description,
@@ -173,7 +203,7 @@ func MigratePost(ctx *context.Context, form auth.MigrateRepoForm) {
 
 	err = models.CheckCreateRepository(ctx.User, ctxUser, opts.RepoName, false)
 	if err != nil {
-		handleMigrateError(ctx, ctxUser, err, "MigratePost", tpl, &form)
+		handleMigrateError(ctx, ctxUser, err, "MigratePost", tpl, form)
 		return
 	}
 
@@ -183,5 +213,17 @@ func MigratePost(ctx *context.Context, form auth.MigrateRepoForm) {
 		return
 	}
 
-	handleMigrateError(ctx, ctxUser, err, "MigratePost", tpl, &form)
+	handleMigrateError(ctx, ctxUser, err, "MigratePost", tpl, form)
+}
+
+func setMigrationContextData(ctx *context.Context, serviceType structs.GitServiceType) {
+	ctx.Data["Title"] = ctx.Tr("new_migrate")
+
+	ctx.Data["LFSActive"] = setting.LFS.StartServer
+	ctx.Data["IsForcedPrivate"] = setting.Repository.ForcePrivate
+	ctx.Data["DisableMirrors"] = setting.Repository.DisableMirrors
+
+	// Plain git should be first
+	ctx.Data["Services"] = append([]structs.GitServiceType{structs.PlainGitService}, structs.SupportedFullGitService...)
+	ctx.Data["service"] = serviceType
 }

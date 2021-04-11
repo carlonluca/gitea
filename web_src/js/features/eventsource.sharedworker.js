@@ -10,8 +10,10 @@ class Source {
     this.listening = {};
     this.clients = [];
     this.listen('open');
+    this.listen('close');
     this.listen('logout');
     this.listen('notification-count');
+    this.listen('stopwatches');
     this.listen('error');
   }
 

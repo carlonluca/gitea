@@ -89,11 +89,7 @@ func isLinkStr(link string) bool {
 
 func getIssueFullPattern() *regexp.Regexp {
 	if issueFullPattern == nil {
-		appURL := setting.AppURL
-		if len(appURL) > 0 && appURL[len(appURL)-1] != '/' {
-			appURL += "/"
-		}
-		issueFullPattern = regexp.MustCompile(appURL +
+		issueFullPattern = regexp.MustCompile(regexp.QuoteMeta(setting.AppURL) +
 			`\w+/\w+/(?:issues|pulls)/((?:\w{1,10}-)?[1-9][0-9]*)([\?|#]\S+.(\S+)?)?\b`)
 	}
 	return issueFullPattern
@@ -264,6 +260,25 @@ func RenderCommitMessageSubject(
 		// append something to it the slice is realloc+copied, so append always
 		// generates the slice ex-novo.
 		ctx.procs = append(ctx.procs, genDefaultLinkProcessor(defaultLink))
+	}
+	return ctx.postProcess(rawHTML)
+}
+
+// RenderIssueTitle to process title on individual issue/pull page
+func RenderIssueTitle(
+	rawHTML []byte,
+	urlPrefix string,
+	metas map[string]string,
+) ([]byte, error) {
+	ctx := &postProcessCtx{
+		metas:     metas,
+		urlPrefix: urlPrefix,
+		procs: []processor{
+			issueIndexPatternProcessor,
+			sha1CurrentPatternProcessor,
+			emojiShortCodeProcessor,
+			emojiProcessor,
+		},
 	}
 	return ctx.postProcess(rawHTML)
 }
@@ -603,11 +618,18 @@ func mentionProcessor(ctx *postProcessCtx, node *html.Node) {
 	mention := node.Data[loc.Start:loc.End]
 	var teams string
 	teams, ok := ctx.metas["teams"]
-	if ok && strings.Contains(teams, ","+strings.ToLower(mention[1:])+",") {
-		replaceContent(node, loc.Start, loc.End, createLink(util.URLJoin(setting.AppURL, "org", ctx.metas["org"], "teams", mention[1:]), mention, "mention"))
-	} else {
-		replaceContent(node, loc.Start, loc.End, createLink(util.URLJoin(setting.AppURL, mention[1:]), mention, "mention"))
+	// FIXME: util.URLJoin may not be necessary here:
+	// - setting.AppURL is defined to have a terminal '/' so unless mention[1:]
+	// is an AppSubURL link we can probably fallback to concatenation.
+	// team mention should follow @orgName/teamName style
+	if ok && strings.Contains(mention, "/") {
+		mentionOrgAndTeam := strings.Split(mention, "/")
+		if mentionOrgAndTeam[0][1:] == ctx.metas["org"] && strings.Contains(teams, ","+strings.ToLower(mentionOrgAndTeam[1])+",") {
+			replaceContent(node, loc.Start, loc.End, createLink(util.URLJoin(setting.AppURL, "org", ctx.metas["org"], "teams", mentionOrgAndTeam[1]), mention, "mention"))
+		}
+		return
 	}
+	replaceContent(node, loc.Start, loc.End, createLink(util.URLJoin(setting.AppURL, mention[1:]), mention, "mention"))
 }
 
 func shortLinkProcessor(ctx *postProcessCtx, node *html.Node) {

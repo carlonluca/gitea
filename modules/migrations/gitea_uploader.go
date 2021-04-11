@@ -9,8 +9,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +25,7 @@ import (
 	"code.gitea.io/gitea/modules/storage"
 	"code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/timeutil"
+	"code.gitea.io/gitea/modules/uri"
 	"code.gitea.io/gitea/services/pull"
 
 	gouuid "github.com/google/uuid"
@@ -92,19 +91,6 @@ func (g *GiteaLocalUploader) CreateRepo(repo *base.Repository, opts base.Migrate
 		return err
 	}
 
-	var remoteAddr = repo.CloneURL
-	if len(opts.AuthToken) > 0 || len(opts.AuthUsername) > 0 {
-		u, err := url.Parse(repo.CloneURL)
-		if err != nil {
-			return err
-		}
-		u.User = url.UserPassword(opts.AuthUsername, opts.AuthPassword)
-		if len(opts.AuthToken) > 0 {
-			u.User = url.UserPassword("oauth2", opts.AuthToken)
-		}
-		remoteAddr = u.String()
-	}
-
 	var r *models.Repository
 	if opts.MigrateToRepoID <= 0 {
 		r, err = repo_module.CreateRepository(g.doer, owner, models.CreateRepoOptions{
@@ -130,10 +116,11 @@ func (g *GiteaLocalUploader) CreateRepo(repo *base.Repository, opts base.Migrate
 		OriginalURL:    repo.OriginalURL,
 		GitServiceType: opts.GitServiceType,
 		Mirror:         repo.IsMirror,
-		CloneAddr:      remoteAddr,
+		CloneAddr:      repo.CloneURL,
 		Private:        repo.IsPrivate,
 		Wiki:           opts.Wiki,
 		Releases:       opts.Releases, // if didn't get releases, then sync them from tags
+		MirrorInterval: opts.MirrorInterval,
 	})
 
 	g.repo = r
@@ -156,7 +143,7 @@ func (g *GiteaLocalUploader) CreateTopics(topics ...string) error {
 	// ignore topics to long for the db
 	c := 0
 	for i := range topics {
-		if len(topics[i]) <= 25 {
+		if len(topics[i]) <= 50 {
 			topics[c] = topics[i]
 			c++
 		}
@@ -223,7 +210,7 @@ func (g *GiteaLocalUploader) CreateLabels(labels ...*base.Label) error {
 }
 
 // CreateReleases creates releases
-func (g *GiteaLocalUploader) CreateReleases(downloader base.Downloader, releases ...*base.Release) error {
+func (g *GiteaLocalUploader) CreateReleases(releases ...*base.Release) error {
 	var rels = make([]*models.Release, 0, len(releases))
 	for _, release := range releases {
 		var rel = models.Release{
@@ -282,18 +269,18 @@ func (g *GiteaLocalUploader) CreateReleases(downloader base.Downloader, releases
 
 			// download attachment
 			err = func() error {
+				// asset.DownloadURL maybe a local file
 				var rc io.ReadCloser
 				if asset.DownloadURL == nil {
-					rc, err = downloader.GetAsset(rel.TagName, rel.ID, asset.ID)
+					rc, err = asset.DownloadFunc()
 					if err != nil {
 						return err
 					}
 				} else {
-					resp, err := http.Get(*asset.DownloadURL)
+					rc, err = uri.Open(*asset.DownloadURL)
 					if err != nil {
 						return err
 					}
-					rc = resp.Body
 				}
 				defer rc.Close()
 				_, err = storage.Attachments.Save(attach.RelativePath(), rc, int64(*asset.Size))
@@ -302,6 +289,7 @@ func (g *GiteaLocalUploader) CreateReleases(downloader base.Downloader, releases
 			if err != nil {
 				return err
 			}
+
 			rel.Attachments = append(rel.Attachments, &attach)
 		}
 
@@ -342,6 +330,7 @@ func (g *GiteaLocalUploader) CreateIssues(issues ...*base.Issue) error {
 			Index:       issue.Number,
 			Title:       issue.Title,
 			Content:     issue.Content,
+			Ref:         issue.Ref,
 			IsClosed:    issue.State == "closed",
 			IsLocked:    issue.IsLocked,
 			MilestoneID: milestoneID,
@@ -558,11 +547,12 @@ func (g *GiteaLocalUploader) newPullRequest(pr *base.PullRequest) (*models.PullR
 
 	// download patch file
 	err := func() error {
-		resp, err := http.Get(pr.PatchURL)
+		// pr.PatchURL maybe a local file
+		ret, err := uri.Open(pr.PatchURL)
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer ret.Close()
 		pullDir := filepath.Join(g.repo.RepoPath(), "pulls")
 		if err = os.MkdirAll(pullDir, os.ModePerm); err != nil {
 			return err
@@ -572,7 +562,7 @@ func (g *GiteaLocalUploader) newPullRequest(pr *base.PullRequest) (*models.PullR
 			return err
 		}
 		defer f.Close()
-		_, err = io.Copy(f, resp.Body)
+		_, err = io.Copy(f, ret)
 		return err
 	}()
 	if err != nil {
@@ -864,4 +854,14 @@ func (g *GiteaLocalUploader) Rollback() error {
 		}
 	}
 	return nil
+}
+
+// Finish when migrating success, this will do some status update things.
+func (g *GiteaLocalUploader) Finish() error {
+	if g.repo == nil || g.repo.ID <= 0 {
+		return ErrRepoNotCreated
+	}
+
+	g.repo.Status = models.RepositoryReady
+	return models.UpdateRepositoryCols(g.repo, "status")
 }

@@ -36,7 +36,7 @@ func TestUserIsPublicMember(t *testing.T) {
 	}
 }
 
-func testUserIsPublicMember(t *testing.T, uid int64, orgID int64, expected bool) {
+func testUserIsPublicMember(t *testing.T, uid, orgID int64, expected bool) {
 	user, err := GetUserByID(uid)
 	assert.NoError(t, err)
 	assert.Equal(t, expected, user.IsPublicMember(orgID))
@@ -62,7 +62,7 @@ func TestIsUserOrgOwner(t *testing.T) {
 	}
 }
 
-func testIsUserOrgOwner(t *testing.T, uid int64, orgID int64, expected bool) {
+func testIsUserOrgOwner(t *testing.T, uid, orgID int64, expected bool) {
 	user, err := GetUserByID(uid)
 	assert.NoError(t, err)
 	assert.Equal(t, expected, user.IsUserOrgOwner(orgID))
@@ -76,23 +76,6 @@ func TestGetUserEmailsByNames(t *testing.T) {
 	assert.Equal(t, []string{"user8@example.com", "user5@example.com"}, GetUserEmailsByNames([]string{"user8", "user5"}))
 
 	assert.Equal(t, []string{"user8@example.com"}, GetUserEmailsByNames([]string{"user8", "user7"}))
-}
-
-func TestUser_APIFormat(t *testing.T) {
-
-	user, err := GetUserByID(1)
-	assert.NoError(t, err)
-	assert.True(t, user.IsAdmin)
-
-	apiUser := user.APIFormat()
-	assert.True(t, apiUser.IsAdmin)
-
-	user, err = GetUserByID(2)
-	assert.NoError(t, err)
-	assert.False(t, user.IsAdmin)
-
-	apiUser = user.APIFormat()
-	assert.False(t, apiUser.IsAdmin)
 }
 
 func TestCanCreateOrganization(t *testing.T) {
@@ -153,13 +136,13 @@ func TestSearchUsers(t *testing.T) {
 	}
 
 	testUserSuccess(&SearchUserOptions{OrderBy: "id ASC", ListOptions: ListOptions{Page: 1}},
-		[]int64{1, 2, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 21, 24, 27, 28, 29})
+		[]int64{1, 2, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 21, 24, 27, 28, 29, 30})
 
 	testUserSuccess(&SearchUserOptions{ListOptions: ListOptions{Page: 1}, IsActive: util.OptionalBoolFalse},
 		[]int64{9})
 
 	testUserSuccess(&SearchUserOptions{OrderBy: "id ASC", ListOptions: ListOptions{Page: 1}, IsActive: util.OptionalBoolTrue},
-		[]int64{1, 2, 4, 5, 8, 10, 11, 12, 13, 14, 15, 16, 18, 20, 21, 24, 28, 29})
+		[]int64{1, 2, 4, 5, 8, 10, 11, 12, 13, 14, 15, 16, 18, 20, 21, 24, 28, 29, 30})
 
 	testUserSuccess(&SearchUserOptions{Keyword: "user1", OrderBy: "id ASC", ListOptions: ListOptions{Page: 1}, IsActive: util.OptionalBoolTrue},
 		[]int64{1, 10, 11, 12, 13, 14, 15, 16, 18})
@@ -237,8 +220,7 @@ func TestEmailNotificationPreferences(t *testing.T) {
 
 func TestHashPasswordDeterministic(t *testing.T) {
 	b := make([]byte, 16)
-	rand.Read(b)
-	u := &User{Salt: string(b)}
+	u := &User{}
 	algos := []string{"argon2", "pbkdf2", "scrypt", "bcrypt"}
 	for j := 0; j < len(algos); j++ {
 		u.PasswdHashAlgo = algos[j]
@@ -248,19 +230,15 @@ func TestHashPasswordDeterministic(t *testing.T) {
 			pass := string(b)
 
 			// save the current password in the user - hash it and store the result
-			u.HashPassword(pass)
+			u.SetPassword(pass)
 			r1 := u.Passwd
 
 			// run again
-			u.HashPassword(pass)
+			u.SetPassword(pass)
 			r2 := u.Passwd
 
-			// assert equal (given the same salt+pass, the same result is produced) except bcrypt
-			if u.PasswdHashAlgo == "bcrypt" {
-				assert.NotEqual(t, r1, r2)
-			} else {
-				assert.Equal(t, r1, r2)
-			}
+			assert.NotEqual(t, r1, r2)
+			assert.True(t, u.ValidatePassword(pass))
 		}
 	}
 }
@@ -269,12 +247,10 @@ func BenchmarkHashPassword(b *testing.B) {
 	// BenchmarkHashPassword ensures that it takes a reasonable amount of time
 	// to hash a password - in order to protect from brute-force attacks.
 	pass := "password1337"
-	bs := make([]byte, 16)
-	rand.Read(bs)
-	u := &User{Salt: string(bs), Passwd: pass}
+	u := &User{Passwd: pass}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		u.HashPassword(pass)
+		u.SetPassword(pass)
 	}
 }
 
@@ -362,7 +338,6 @@ func TestCreateUserInvalidEmail(t *testing.T) {
 }
 
 func TestCreateUser_Issue5882(t *testing.T) {
-
 	// Init settings
 	_ = setting.Admin
 
@@ -393,13 +368,12 @@ func TestCreateUser_Issue5882(t *testing.T) {
 }
 
 func TestGetUserIDsByNames(t *testing.T) {
-
-	//ignore non existing
+	// ignore non existing
 	IDs, err := GetUserIDsByNames([]string{"user1", "user2", "none_existing_user"}, true)
 	assert.NoError(t, err)
 	assert.Equal(t, []int64{1, 2}, IDs)
 
-	//ignore non existing
+	// ignore non existing
 	IDs, err = GetUserIDsByNames([]string{"user1", "do_not_exist"}, false)
 	assert.Error(t, err)
 	assert.Equal(t, []int64(nil), IDs)

@@ -62,6 +62,10 @@ func (*NullNotifier) NotifyPullRequestChangeTargetBranch(doer *models.User, pr *
 func (*NullNotifier) NotifyPullRequestPushCommits(doer *models.User, pr *models.PullRequest, comment *models.Comment) {
 }
 
+// NotifyPullRevieweDismiss notifies when a review was dismissed by repo admin
+func (*NullNotifier) NotifyPullRevieweDismiss(doer *models.User, review *models.Review, comment *models.Comment) {
+}
+
 // NotifyUpdateComment places a place holder function
 func (*NullNotifier) NotifyUpdateComment(doer *models.User, c *models.Comment, oldContent string) {
 }
@@ -132,7 +136,7 @@ func (*NullNotifier) NotifyMigrateRepository(doer *models.User, u *models.User, 
 }
 
 // NotifyPushCommits notifies commits pushed to notifiers
-func (*NullNotifier) NotifyPushCommits(pusher *models.User, repo *models.Repository, refName, oldCommitID, newCommitID string, commits *repository.PushCommits) {
+func (*NullNotifier) NotifyPushCommits(pusher *models.User, repo *models.Repository, opts *repository.PushUpdateOptions, commits *repository.PushCommits) {
 }
 
 // NotifyCreateRef notifies branch or tag creation to notifiers
@@ -152,7 +156,7 @@ func (*NullNotifier) NotifyTransferRepository(doer *models.User, repo *models.Re
 }
 
 // NotifySyncPushCommits places a place holder function
-func (*NullNotifier) NotifySyncPushCommits(pusher *models.User, repo *models.Repository, refName, oldCommitID, newCommitID string, commits *repository.PushCommits) {
+func (*NullNotifier) NotifySyncPushCommits(pusher *models.User, repo *models.Repository, opts *repository.PushUpdateOptions, commits *repository.PushCommits) {
 }
 
 // NotifySyncCreateRef places a place holder function
@@ -161,4 +165,8 @@ func (*NullNotifier) NotifySyncCreateRef(doer *models.User, repo *models.Reposit
 
 // NotifySyncDeleteRef places a place holder function
 func (*NullNotifier) NotifySyncDeleteRef(doer *models.User, repo *models.Repository, refType, refFullName string) {
+}
+
+// NotifyRepoPendingTransfer places a place holder function
+func (*NullNotifier) NotifyRepoPendingTransfer(doer, newOwner *models.User, repo *models.Repository) {
 }

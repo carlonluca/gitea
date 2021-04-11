@@ -18,10 +18,8 @@ import (
 	"xorm.io/builder"
 )
 
-var (
-	// ErrEmailAddressNotExist email address not exist
-	ErrEmailAddressNotExist = errors.New("Email address does not exist")
-)
+// ErrEmailAddressNotExist email address not exist
+var ErrEmailAddressNotExist = errors.New("Email address does not exist")
 
 // EmailAddress is the list of all email addresses of a user. Can contain the
 // primary email address, but is not obligatory.
@@ -42,6 +40,8 @@ func ValidateEmail(email string) error {
 	if _, err := mail.ParseAddress(email); err != nil {
 		return ErrEmailInvalid{email}
 	}
+
+	// TODO: add an email allow/block list
 
 	return nil
 }
@@ -229,7 +229,7 @@ func (email *EmailAddress) updateActivation(e Engine, activate bool) error {
 func DeleteEmailAddress(email *EmailAddress) (err error) {
 	var deleted int64
 	// ask to check UID
-	var address = EmailAddress{
+	address := EmailAddress{
 		UID: email.UID,
 	}
 	if email.ID > 0 {

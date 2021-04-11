@@ -130,9 +130,12 @@ func init() {
 		new(Task),
 		new(LanguageStat),
 		new(EmailHash),
+		new(UserRedirect),
 		new(Project),
 		new(ProjectBoard),
 		new(ProjectIssue),
+		new(Session),
+		new(RepoTransfer),
 	)
 
 	gonicNames := []string{"SSL", "UID"}
@@ -177,8 +180,8 @@ func NewTestEngine() (err error) {
 	}
 
 	x.SetMapper(names.GonicMapper{})
-	x.SetLogger(NewXORMLogger(!setting.ProdMode))
-	x.ShowSQL(!setting.ProdMode)
+	x.SetLogger(NewXORMLogger(!setting.IsProd()))
+	x.ShowSQL(!setting.IsProd())
 	return x.StoreEngine("InnoDB").Sync2(tables...)
 }
 
@@ -304,7 +307,7 @@ func Ping() error {
 }
 
 // DumpDatabase dumps all data from database according the special database SQL syntax to file system.
-func DumpDatabase(filePath string, dbType string) error {
+func DumpDatabase(filePath, dbType string) error {
 	var tbs []*schemas.Table
 	for _, t := range tables {
 		t, err := x.TableInfo(t)

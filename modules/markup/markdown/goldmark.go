@@ -139,10 +139,6 @@ func (g *ASTTransformer) Transform(node *ast.Document, reader text.Reader, pc pa
 
 				// But most importantly ensure the next sibling is still on the old image too
 				v.SetNextSibling(next)
-
-			} else {
-				log.Debug("ast.Image: %s has parent: %v", link, parent)
-
 			}
 		case *ast.Link:
 			// Links need their href to munged to be a real value
@@ -394,9 +390,9 @@ func (r *HTMLRenderer) renderTaskCheckBoxListItem(w util.BufWriter, source []byt
 		}
 		var err error
 		if n.IsChecked {
-			_, err = w.WriteString(`<span class="ui checked checkbox"><input type="checkbox" checked="" readonly="readonly"` + end + `<label>`)
+			_, err = w.WriteString(`<input type="checkbox" disabled="" checked=""` + end)
 		} else {
-			_, err = w.WriteString(`<span class="ui checkbox"><input type="checkbox" readonly="readonly"` + end + `<label>`)
+			_, err = w.WriteString(`<input type="checkbox" disabled=""` + end)
 		}
 		if err != nil {
 			return ast.WalkStop, err
@@ -408,7 +404,7 @@ func (r *HTMLRenderer) renderTaskCheckBoxListItem(w util.BufWriter, source []byt
 			}
 		}
 	} else {
-		_, _ = w.WriteString("</label></span></li>\n")
+		_, _ = w.WriteString("</li>\n")
 	}
 	return ast.WalkContinue, nil
 }

@@ -16,14 +16,14 @@ func ToUser(user *models.User, signed, authed bool) *api.User {
 	if user == nil {
 		return nil
 	}
-
 	result := &api.User{
-		ID:        user.ID,
-		UserName:  user.Name,
-		FullName:  markup.Sanitize(user.FullName),
-		Email:     user.GetEmail(),
-		AvatarURL: user.AvatarLink(),
-		Created:   user.CreatedUnix.AsTime(),
+		ID:         user.ID,
+		UserName:   user.Name,
+		FullName:   markup.Sanitize(user.FullName),
+		Email:      user.GetEmail(),
+		AvatarURL:  user.AvatarLink(),
+		Created:    user.CreatedUnix.AsTime(),
+		Restricted: user.IsRestricted,
 	}
 	// hide primary email if API caller is anonymous or user keep email private
 	if signed && (!user.KeepEmailPrivate || authed) {

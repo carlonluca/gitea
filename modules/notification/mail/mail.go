@@ -110,7 +110,7 @@ func (m *mailNotifier) NotifyIssueChangeAssignee(doer *models.User, issue *model
 
 func (m *mailNotifier) NotifyPullReviewRequest(doer *models.User, issue *models.Issue, reviewer *models.User, isRequest bool, comment *models.Comment) {
 	if isRequest && doer.ID != reviewer.ID && reviewer.EmailNotifications() == models.EmailNotificationsEnabled {
-		ct := fmt.Sprintf("Requested to review #%d.", issue.Index)
+		ct := fmt.Sprintf("Requested to review %s.", issue.HTMLURL())
 		mailer.SendIssueAssignedMail(issue, doer, ct, comment, []string{reviewer.Email})
 	}
 }
@@ -152,6 +152,12 @@ func (m *mailNotifier) NotifyPullRequestPushCommits(doer *models.User, pr *model
 	m.NotifyCreateIssueComment(doer, comment.Issue.Repo, comment.Issue, comment, nil)
 }
 
+func (m *mailNotifier) NotifyPullRevieweDismiss(doer *models.User, review *models.Review, comment *models.Comment) {
+	if err := mailer.MailParticipantsComment(comment, models.ActionPullReviewDismissed, review.Issue, []*models.User{}); err != nil {
+		log.Error("MailParticipantsComment: %v", err)
+	}
+}
+
 func (m *mailNotifier) NotifyNewRelease(rel *models.Release) {
 	if err := rel.LoadAttributes(); err != nil {
 		log.Error("NotifyNewRelease: %v", err)
@@ -163,4 +169,10 @@ func (m *mailNotifier) NotifyNewRelease(rel *models.Release) {
 	}
 
 	mailer.MailNewRelease(rel)
+}
+
+func (m *mailNotifier) NotifyRepoPendingTransfer(doer, newOwner *models.User, repo *models.Repository) {
+	if err := mailer.SendRepoTransferNotifyMail(doer, newOwner, repo); err != nil {
+		log.Error("NotifyRepoPendingTransfer: %v", err)
+	}
 }

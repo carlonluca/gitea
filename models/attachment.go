@@ -12,7 +12,6 @@ import (
 
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/storage"
-	api "code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/timeutil"
 
 	gouuid "github.com/google/uuid"
@@ -41,19 +40,6 @@ func (a *Attachment) IncreaseDownloadCount() error {
 	}
 
 	return nil
-}
-
-// APIFormat converts models.Attachment to api.Attachment
-func (a *Attachment) APIFormat() *api.Attachment {
-	return &api.Attachment{
-		ID:            a.ID,
-		Name:          a.Name,
-		Created:       a.CreatedUnix.AsTime(),
-		DownloadCount: a.DownloadCount,
-		Size:          a.Size,
-		UUID:          a.UUID,
-		DownloadURL:   a.DownloadURL(),
-	}
 }
 
 // AttachmentRelativePath returns the relative path
@@ -207,7 +193,7 @@ func DeleteAttachments(attachments []*Attachment, remove bool) (int, error) {
 		return 0, nil
 	}
 
-	var ids = make([]int64, 0, len(attachments))
+	ids := make([]int64, 0, len(attachments))
 	for _, a := range attachments {
 		ids = append(ids, a.ID)
 	}
@@ -230,7 +216,6 @@ func DeleteAttachments(attachments []*Attachment, remove bool) (int, error) {
 // DeleteAttachmentsByIssue deletes all attachments associated with the given issue.
 func DeleteAttachmentsByIssue(issueID int64, remove bool) (int, error) {
 	attachments, err := GetAttachmentsByIssueID(issueID)
-
 	if err != nil {
 		return 0, err
 	}
@@ -241,7 +226,6 @@ func DeleteAttachmentsByIssue(issueID int64, remove bool) (int, error) {
 // DeleteAttachmentsByComment deletes all attachments associated with the given comment.
 func DeleteAttachmentsByComment(commentID int64, remove bool) (int, error) {
 	attachments, err := GetAttachmentsByCommentID(commentID)
-
 	if err != nil {
 		return 0, err
 	}
@@ -277,7 +261,7 @@ func IterateAttachment(f func(attach *Attachment) error) error {
 	var start int
 	const batchSize = 100
 	for {
-		var attachments = make([]*Attachment, 0, batchSize)
+		attachments := make([]*Attachment, 0, batchSize)
 		if err := x.Limit(batchSize, start).Find(&attachments); err != nil {
 			return err
 		}

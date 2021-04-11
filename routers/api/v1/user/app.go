@@ -15,6 +15,7 @@ import (
 	"code.gitea.io/gitea/modules/context"
 	"code.gitea.io/gitea/modules/convert"
 	api "code.gitea.io/gitea/modules/structs"
+	"code.gitea.io/gitea/modules/web"
 	"code.gitea.io/gitea/routers/api/v1/utils"
 )
 
@@ -61,7 +62,7 @@ func ListAccessTokens(ctx *context.APIContext) {
 }
 
 // CreateAccessToken create access tokens
-func CreateAccessToken(ctx *context.APIContext, form api.CreateAccessTokenOption) {
+func CreateAccessToken(ctx *context.APIContext) {
 	// swagger:operation POST /users/{username}/tokens user userCreateToken
 	// ---
 	// summary: Create an access token
@@ -85,8 +86,10 @@ func CreateAccessToken(ctx *context.APIContext, form api.CreateAccessTokenOption
 	//       name:
 	//         type: string
 	// responses:
-	//   "200":
+	//   "201":
 	//     "$ref": "#/responses/AccessToken"
+
+	form := web.GetForm(ctx).(*api.CreateAccessTokenOption)
 
 	t := &models.AccessToken{
 		UID:  ctx.User.ID,
@@ -181,7 +184,7 @@ func DeleteAccessToken(ctx *context.APIContext) {
 }
 
 // CreateOauth2Application is the handler to create a new OAuth2 Application for the authenticated user
-func CreateOauth2Application(ctx *context.APIContext, data api.CreateOAuth2ApplicationOptions) {
+func CreateOauth2Application(ctx *context.APIContext) {
 	// swagger:operation POST /user/applications/oauth2 user userCreateOAuth2Application
 	// ---
 	// summary: creates a new OAuth2 application
@@ -196,6 +199,9 @@ func CreateOauth2Application(ctx *context.APIContext, data api.CreateOAuth2Appli
 	// responses:
 	//   "201":
 	//     "$ref": "#/responses/OAuth2Application"
+
+	data := web.GetForm(ctx).(*api.CreateOAuth2ApplicationOptions)
+
 	app, err := models.CreateOAuth2Application(models.CreateOAuth2ApplicationOptions{
 		Name:         data.Name,
 		UserID:       ctx.User.ID,
@@ -268,7 +274,11 @@ func DeleteOauth2Application(ctx *context.APIContext) {
 	//     "$ref": "#/responses/empty"
 	appID := ctx.ParamsInt64(":id")
 	if err := models.DeleteOAuth2Application(appID, ctx.User.ID); err != nil {
-		ctx.Error(http.StatusInternalServerError, "DeleteOauth2ApplicationByID", err)
+		if models.IsErrOAuthApplicationNotFound(err) {
+			ctx.NotFound()
+		} else {
+			ctx.Error(http.StatusInternalServerError, "DeleteOauth2ApplicationByID", err)
+		}
 		return
 	}
 
@@ -309,7 +319,7 @@ func GetOauth2Application(ctx *context.APIContext) {
 }
 
 // UpdateOauth2Application update OAuth2 Application
-func UpdateOauth2Application(ctx *context.APIContext, data api.CreateOAuth2ApplicationOptions) {
+func UpdateOauth2Application(ctx *context.APIContext) {
 	// swagger:operation PATCH /user/applications/oauth2/{id} user userUpdateOAuth2Application
 	// ---
 	// summary: update an OAuth2 Application, this includes regenerating the client secret
@@ -331,6 +341,8 @@ func UpdateOauth2Application(ctx *context.APIContext, data api.CreateOAuth2Appli
 	//   "200":
 	//     "$ref": "#/responses/OAuth2Application"
 	appID := ctx.ParamsInt64(":id")
+
+	data := web.GetForm(ctx).(*api.CreateOAuth2ApplicationOptions)
 
 	app, err := models.UpdateOAuth2Application(models.UpdateOAuth2ApplicationOptions{
 		Name:         data.Name,

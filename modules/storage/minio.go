@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"code.gitea.io/gitea/modules/log"
+
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -88,6 +89,7 @@ func NewMinioStorage(ctx context.Context, cfg interface{}) (ObjectStorage, error
 	config := configInterface.(MinioStorageConfig)
 
 	log.Info("Creating Minio storage at %s:%s with base path %s", config.Endpoint, config.Bucket, config.BasePath)
+
 	minioClient, err := minio.New(config.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(config.AccessKeyID, config.SecretAccessKey, ""),
 		Secure: config.UseSSL,
@@ -181,11 +183,6 @@ func (m *MinioStorage) Stat(path string) (os.FileInfo, error) {
 		minio.StatObjectOptions{},
 	)
 	if err != nil {
-		if errResp, ok := err.(minio.ErrorResponse); ok {
-			if errResp.Code == "NoSuchKey" {
-				return nil, os.ErrNotExist
-			}
-		}
 		return nil, convertMinioErr(err)
 	}
 	return &minioFileInfo{info}, nil
@@ -193,10 +190,9 @@ func (m *MinioStorage) Stat(path string) (os.FileInfo, error) {
 
 // Delete delete a file
 func (m *MinioStorage) Delete(path string) error {
-	if err := m.client.RemoveObject(m.ctx, m.bucket, m.buildMinioPath(path), minio.RemoveObjectOptions{}); err != nil {
-		return convertMinioErr(err)
-	}
-	return nil
+	err := m.client.RemoveObject(m.ctx, m.bucket, m.buildMinioPath(path), minio.RemoveObjectOptions{})
+
+	return convertMinioErr(err)
 }
 
 // URL gets the redirect URL to a file. The presigned link is valid for 5 minutes.

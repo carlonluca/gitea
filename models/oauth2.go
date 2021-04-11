@@ -26,7 +26,8 @@ var OAuth2Providers = map[string]OAuth2Provider{
 	"bitbucket": {Name: "bitbucket", DisplayName: "Bitbucket", Image: "/img/auth/bitbucket.png"},
 	"dropbox":   {Name: "dropbox", DisplayName: "Dropbox", Image: "/img/auth/dropbox.png"},
 	"facebook":  {Name: "facebook", DisplayName: "Facebook", Image: "/img/auth/facebook.png"},
-	"github": {Name: "github", DisplayName: "GitHub", Image: "/img/auth/github.png",
+	"github": {
+		Name: "github", DisplayName: "GitHub", Image: "/img/auth/github.png",
 		CustomURLMapping: &oauth2.CustomURLMapping{
 			TokenURL:   oauth2.GetDefaultTokenURL("github"),
 			AuthURL:    oauth2.GetDefaultAuthURL("github"),
@@ -34,7 +35,8 @@ var OAuth2Providers = map[string]OAuth2Provider{
 			EmailURL:   oauth2.GetDefaultEmailURL("github"),
 		},
 	},
-	"gitlab": {Name: "gitlab", DisplayName: "GitLab", Image: "/img/auth/gitlab.png",
+	"gitlab": {
+		Name: "gitlab", DisplayName: "GitLab", Image: "/img/auth/gitlab.png",
 		CustomURLMapping: &oauth2.CustomURLMapping{
 			TokenURL:   oauth2.GetDefaultTokenURL("gitlab"),
 			AuthURL:    oauth2.GetDefaultAuthURL("gitlab"),
@@ -45,14 +47,16 @@ var OAuth2Providers = map[string]OAuth2Provider{
 	"openidConnect": {Name: "openidConnect", DisplayName: "OpenID Connect", Image: "/img/auth/openid_connect.svg"},
 	"twitter":       {Name: "twitter", DisplayName: "Twitter", Image: "/img/auth/twitter.png"},
 	"discord":       {Name: "discord", DisplayName: "Discord", Image: "/img/auth/discord.png"},
-	"gitea": {Name: "gitea", DisplayName: "Gitea", Image: "/img/auth/gitea.png",
+	"gitea": {
+		Name: "gitea", DisplayName: "Gitea", Image: "/img/auth/gitea.png",
 		CustomURLMapping: &oauth2.CustomURLMapping{
 			TokenURL:   oauth2.GetDefaultTokenURL("gitea"),
 			AuthURL:    oauth2.GetDefaultAuthURL("gitea"),
 			ProfileURL: oauth2.GetDefaultProfileURL("gitea"),
 		},
 	},
-	"nextcloud": {Name: "nextcloud", DisplayName: "Nextcloud", Image: "/img/auth/nextcloud.png",
+	"nextcloud": {
+		Name: "nextcloud", DisplayName: "Nextcloud", Image: "/img/auth/nextcloud.png",
 		CustomURLMapping: &oauth2.CustomURLMapping{
 			TokenURL:   oauth2.GetDefaultTokenURL("nextcloud"),
 			AuthURL:    oauth2.GetDefaultAuthURL("nextcloud"),
@@ -60,6 +64,12 @@ var OAuth2Providers = map[string]OAuth2Provider{
 		},
 	},
 	"yandex": {Name: "yandex", DisplayName: "Yandex", Image: "/img/auth/yandex.png"},
+	"mastodon": {
+		Name: "mastodon", DisplayName: "Mastodon", Image: "/img/auth/mastodon.png",
+		CustomURLMapping: &oauth2.CustomURLMapping{
+			AuthURL: oauth2.GetDefaultAuthURL("mastodon"),
+		},
+	},
 }
 
 // OAuth2DefaultCustomURLMappings contains the map of default URL's for OAuth2 providers that are allowed to have custom urls
@@ -70,6 +80,7 @@ var OAuth2DefaultCustomURLMappings = map[string]*oauth2.CustomURLMapping{
 	"gitlab":    OAuth2Providers["gitlab"].CustomURLMapping,
 	"gitea":     OAuth2Providers["gitea"].CustomURLMapping,
 	"nextcloud": OAuth2Providers["nextcloud"].CustomURLMapping,
+	"mastodon":  OAuth2Providers["mastodon"].CustomURLMapping,
 }
 
 // GetActiveOAuth2ProviderLoginSources returns all actived LoginOAuth2 sources
@@ -106,7 +117,11 @@ func GetActiveOAuth2Providers() ([]string, map[string]OAuth2Provider, error) {
 	var orderedKeys []string
 	providers := make(map[string]OAuth2Provider)
 	for _, source := range loginSources {
-		providers[source.Name] = OAuth2Providers[source.OAuth2().Provider]
+		prov := OAuth2Providers[source.OAuth2().Provider]
+		if source.OAuth2().IconURL != "" {
+			prov.Image = source.OAuth2().IconURL
+		}
+		providers[source.Name] = prov
 		orderedKeys = append(orderedKeys, source.Name)
 	}
 
